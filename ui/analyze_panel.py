@@ -6,6 +6,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -157,7 +158,7 @@ class AnalyzePanel(QFrame):
         apply_tone(self.summary_banner, "info", padding=8, radius=8)
         main_layout.addWidget(self.summary_banner)
 
-        self.quick_actions_summary = QLabel("快捷操作: 刷新日志 / 下载日志 / 回放 / CSV 导出")
+        self.quick_actions_summary = QLabel("快捷操作: 刷新日志 / 下载日志 / 回放 / CSV 导出 / 自动飞行报告")
         self.quick_actions_summary.setWordWrap(True)
         apply_tone(self.quick_actions_summary, "neutral", padding=7, radius=8)
         main_layout.addWidget(self.quick_actions_summary)
@@ -254,11 +255,31 @@ class AnalyzePanel(QFrame):
         charts_layout.addWidget(self.chart_text)
         self.tabs.addTab(charts_page, "图表")
 
+        report_page = QWidget()
+        report_layout = QVBoxLayout(report_page)
+        report_layout.setContentsMargins(10, 10, 10, 10)
+        self.report_summary = QLabel("自动飞行报告: 等待遥测数据")
+        self.report_summary.setWordWrap(True)
+        apply_tone(self.report_summary, "info", padding=8, radius=8)
+        report_layout.addWidget(self.report_summary)
+        report_actions = QHBoxLayout()
+        self.btn_copy_report = QPushButton("复制报告")
+        style_action_button(self.btn_copy_report, "info", compact=True)
+        report_actions.addWidget(self.btn_copy_report)
+        report_actions.addStretch()
+        report_layout.addLayout(report_actions)
+        self.flight_report_text = QPlainTextEdit()
+        self.flight_report_text.setReadOnly(True)
+        self.flight_report_text.setPlaceholderText("连接后将自动生成飞行报告摘要")
+        report_layout.addWidget(self.flight_report_text, 1)
+        self.tabs.addTab(report_page, "报告")
+
         self.close_btn.clicked.connect(self.close_clicked.emit)
         self.btn_refresh.clicked.connect(self.refresh_requested.emit)
         self.btn_download.clicked.connect(self.download_logs_requested.emit)
         self.btn_replay.clicked.connect(self._emit_replay)
         self.btn_toggle_inspector.clicked.connect(self._toggle_inspector)
+        self.btn_copy_report.clicked.connect(self._copy_report)
         self.log_list.currentItemChanged.connect(self._emit_selected_log)
         style_action_button(self.btn_refresh, "info", compact=True)
         style_action_button(self.btn_download, "warn", compact=True)
@@ -302,6 +323,12 @@ class AnalyzePanel(QFrame):
         self.inspector_text.setVisible(visible)
         self.btn_toggle_inspector.setText("收起 JSON 详情" if visible else "展开 JSON 详情")
 
+    def _copy_report(self):
+        text = self.flight_report_text.toPlainText().strip()
+        if text:
+            QApplication.clipboard().setText(text)
+            self.report_summary.setText("自动飞行报告: 已复制到剪贴板")
+
     def export_chart_csv(self, file_path: str | None = None) -> str:
         return self._service.export_csv_text(file_path)
 
@@ -342,6 +369,8 @@ class AnalyzePanel(QFrame):
 
         self.chart_summary.setText(str(report.get("chart_summary", "趋势摘要: 等待遥测数据")))
         self.summary_banner.setText(str(report.get("banner_summary", "分析概览: 等待遥测 / 日志数据")))
+        self.report_summary.setText(str(report.get("report_summary", "自动飞行报告: 等待遥测数据")))
+        self.flight_report_text.setPlainText(str(report.get("flight_report", "自动飞行报告\n等待遥测数据进入后自动生成。")))
         self.updated_at.setText(recent_time_text())
         self.inspector_summary.setText("优先展示关键指标卡片。JSON 详情默认折叠，可按需展开。")
         self._refresh_chart_view()

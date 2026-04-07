@@ -56,6 +56,8 @@ from core.connection_controller import ConnectionController
 from core.data_recorder import DataRecorder
 from core.health_monitor import HealthMonitor
 from core.link_manager import MultiLinkManager
+from core.notification_controller import NotificationController
+from core.telemetry_status_controller import TelemetryStatusController
 from core.link_session_service import LinkSessionService
 from core.fact_panel_controller import FactPanelController
 from core.firmware_plugin import resolve_plugins
@@ -482,6 +484,8 @@ class DroneGroundStation(QMainWindow):
         self.settings_manager = SettingsManager()
         self.link_session_service = LinkSessionService()
         self.connection_controller = ConnectionController(self.link_session_service)
+        self.notification_controller = NotificationController()
+        self.telemetry_status_controller = TelemetryStatusController()
         self.vehicle_context_service = VehicleContextService()
         self.mission_sync_service = MissionSyncService()
         self.mission_transfer_controller = MissionTransferController(self.mission_sync_service)
@@ -561,31 +565,34 @@ class DroneGroundStation(QMainWindow):
         )
 
     def _reset_live_status_labels(self):
-        self.flight_time.setText("飞行时间: 00:00:00")
-        self.battery.setText("电池: 100%")
-        self.altitude.setText("高度: 0.0m")
-        self.speed.setText("速度: 0.0m/s")
-        self.mode.setText("模式: UNKNOWN")
-        self.gps.setText("GPS: 0 颗")
-        self.volt.setText("电压: 0.00V")
-        self.alert.setText("状态: 正常")
-        for label in [self.flight_time, self.battery, self.altitude, self.speed, self.mode, self.gps, self.volt]:
-            self._apply_status_chip_style(label, "neutral")
-        self._apply_status_chip_style(self.alert, "ok")
+        payload = self.telemetry_status_controller.reset_labels()
+        self.flight_time.setText(str(payload.get("flight_time", "飞行时间: 00:00:00")))
+        self.battery.setText(str(payload.get("battery", "电池: 100%")))
+        self.altitude.setText(str(payload.get("altitude", "高度: 0.0m")))
+        self.speed.setText(str(payload.get("speed", "速度: 0.0m/s")))
+        self.mode.setText(str(payload.get("mode", "模式: UNKNOWN")))
+        self.gps.setText(str(payload.get("gps", "GPS: 0 颗")))
+        self.volt.setText(str(payload.get("volt", "电压: 0.00V")))
+        self.alert.setText(str(payload.get("alert", "状态: 正常")))
+        tones = dict(payload.get("tones", {}) or {})
+        for name, label in [
+            ("flight_time", self.flight_time),
+            ("battery", self.battery),
+            ("altitude", self.altitude),
+            ("speed", self.speed),
+            ("mode", self.mode),
+            ("gps", self.gps),
+            ("volt", self.volt),
+        ]:
+            self._apply_status_chip_style(label, str(tones.get(name, "neutral")))
+        self._apply_status_chip_style(self.alert, str(tones.get("alert", "ok")))
 
     def _update_telemetry_chip_styles(self, data: dict):
-        battery_remaining = int(data.get("battery_remaining", 100) or 0)
-        gps_count = int(data.get("gps", 0) or 0)
-        voltage = float(data.get("volt", 0.0) or 0.0)
-
-        battery_tone = "danger" if battery_remaining < 25 else "warn" if battery_remaining < 45 else "ok"
-        gps_tone = "danger" if gps_count < 6 else "warn" if gps_count < 10 else "ok"
-        voltage_tone = "danger" if voltage < 10.5 else "warn" if voltage < 11.1 else "neutral"
-
-        self._apply_status_chip_style(self.battery, battery_tone)
-        self._apply_status_chip_style(self.gps, gps_tone)
-        self._apply_status_chip_style(self.volt, voltage_tone)
-        self._apply_status_chip_style(self.alert, "ok")
+        tones = self.telemetry_status_controller.chip_tones(data)
+        self._apply_status_chip_style(self.battery, str(tones.get("battery", "neutral")))
+        self._apply_status_chip_style(self.gps, str(tones.get("gps", "neutral")))
+        self._apply_status_chip_style(self.volt, str(tones.get("volt", "neutral")))
+        self._apply_status_chip_style(self.alert, str(tones.get("alert", "ok")))
 
     def init_ui(self):
         central = QWidget()
@@ -1969,55 +1976,26 @@ class DroneGroundStation(QMainWindow):
             self.app_logger.exception("firmware parameter validation failed")
 
     def _show_auto_notice(self, title: str, message: str, duration_ms: int = 3000):
-        _ok     = ("成功", "完成", "连接成功", "下载成功", "上传成功")
-        _danger = ("失败", "错误", "崩溃", "超时", "无效")
-        _warn   = ("未连接", "未实现", "功能不可用", "请稍候", "未检测到")
-        text = f"{title}{message}"
-        if any(k in text for k in _ok):
-            level = "ok"
-        elif any(k in text for k in _danger):
-            level = "danger"
-        elif any(k in text for k in _warn):
-            level = "warn"
-        else:
-            level = "info"
+        notice = self.notification_controller.build_notice(title, message, duration_ms)
         if self._notice_overlay is not None:
-            self._notice_overlay.add_notice(title, message, level)
+            self._notice_overlay.add_notice(notice["title"], notice["message"], notice["level"])
             return
-        # 兜底：若覆盖层尚未初始化，至少保证状态栏文案可见，不让异常中断流程。
         if hasattr(self, "connection_status") and self.connection_status is not None:
-            self.connection_status.setText(f"提示: {title} {message}")
+            self.connection_status.setText(str(notice.get("fallback_text", f"提示: {title} {message}")))
 
     def on_connection_state_changed(self, state: str):
         try:
             state = str(state or "disconnected")
+            view = self.telemetry_status_controller.connection_view(state)
 
-            labels = {
-                "connected": "🟢 已连接",
-                "connecting": "🟡 连接中",
-                "disconnecting": "🟠 断开中",
-                "disconnected": "🔴 未连接",
-            }
-            tones = {
-                "connected": "ok",
-                "connecting": "warn",
-                "disconnecting": "warn",
-                "disconnected": "danger",
-            }
-            flight_labels = {
-                "connected": "已连接",
-                "connecting": "连接中",
-                "disconnecting": "断开中",
-                "disconnected": "未连接",
-            }
+            self.connection_status.setText(str(view.get("text", "🔴 未连接")))
+            self._apply_status_chip_style(self.connection_status, str(view.get("tone", "danger")))
+            self.connection_status.setToolTip(str(view.get("tooltip", "点击打开连接对话框")))
 
-            self.connection_status.setText(labels.get(state, "🔴 未连接"))
-            self._apply_status_chip_style(self.connection_status, tones.get(state, "danger"))
-            self.connection_status.setToolTip("点击断开连接" if state == "connected" else "点击打开连接对话框")
-
-            self.flight_content.set_connection_state(flight_labels.get(state, "未连接"))
+            flight_label = str(view.get("flight_label", "未连接"))
+            self.flight_content.set_connection_state(flight_label)
             if hasattr(self, "fly_view_content") and self.fly_view_content is not None:
-                self.fly_view_content.set_connection_state(flight_labels.get(state, "未连接"))
+                self.fly_view_content.set_connection_state(flight_label)
                 if state != "connected":
                     self.fly_view_content.set_mission_status("等待连接")
             self._refresh_mp_action_states()
@@ -2060,10 +2038,8 @@ class DroneGroundStation(QMainWindow):
             self.log_user_action("connection_failed", error=message)
             if hasattr(self, "fly_view_content") and self.fly_view_content is not None:
                 self.fly_view_content.set_alert_text(str(message or "连接异常"))
-            if "自动重连" in message or "连接中断" in message:
-                self._show_auto_notice("连接状态", message)
-            else:
-                self._show_auto_notice("连接失败", message)
+            notice = self.notification_controller.connection_error_notice(str(message or "连接异常"))
+            self._show_auto_notice(str(notice.get("title", "连接失败")), str(notice.get("message", message)))
         except Exception as exc:
             self.app_logger.exception("on_connection_error crashed: %s", exc)
 
@@ -2078,9 +2054,7 @@ class DroneGroundStation(QMainWindow):
             plugin_bundle=plugin_bundle,
         )
         if hasattr(self, "mp_workbench_panel") and self.mp_workbench_panel is not None:
-            self.mp_workbench_panel.set_status(
-                f"{vehicle_summary.get('vehicle_id', '--')} | {vehicle_summary.get('mode', 'UNKNOWN')} | 电池 {vehicle_summary.get('battery_remaining', 0)}%"
-            )
+            self.mp_workbench_panel.set_status(self.telemetry_status_controller.workbench_status(vehicle_summary))
         if hasattr(self, "setup_content") and self.setup_content is not None:
             self.setup_content.set_vehicle(vehicle_summary)
         if hasattr(self, "fly_view_content") and self.fly_view_content is not None:
@@ -2102,13 +2076,14 @@ class DroneGroundStation(QMainWindow):
         self.alarm.refresh_heartbeat()
         self.alarm.check_status(data)
         self.recorder.write_data(data)
-        self.battery.setText(f"电池: {data.get('battery_remaining', 100)}%")
-        self.altitude.setText(f"高度: {data.get('alt', 0):.1f}m")
-        self.speed.setText(f"速度: {data.get('vel', 0):.1f}m/s")
-        self.mode.setText(f"模式: {data.get('mode', 'UNKNOWN')}")
-        self.gps.setText(f"GPS: {data.get('gps', 0)} 颗")
-        self.volt.setText(f"电压: {data.get('volt', 0):.2f}V")
-        self.alert.setText("状态: 正常")
+        label_payload = self.telemetry_status_controller.telemetry_labels(data)
+        self.battery.setText(str(label_payload.get("battery", "电池: 100%")))
+        self.altitude.setText(str(label_payload.get("altitude", "高度: 0.0m")))
+        self.speed.setText(str(label_payload.get("speed", "速度: 0.0m/s")))
+        self.mode.setText(str(label_payload.get("mode", "模式: UNKNOWN")))
+        self.gps.setText(str(label_payload.get("gps", "GPS: 0 颗")))
+        self.volt.setText(str(label_payload.get("volt", "电压: 0.00V")))
+        self.alert.setText(str(label_payload.get("alert", "状态: 正常")))
         self._update_telemetry_chip_styles(data)
         self.flight_content.set_flight_mode(data.get('mode', 'UNKNOWN'))
 
@@ -2622,6 +2597,67 @@ class DroneGroundStation(QMainWindow):
         )
         return dict(report.get("auto_route_overrides") or {}), [dict(wp) for wp in (report.get("waypoints") or [])]
 
+    def _apply_download_plan_to_ui(self, download_plan: dict) -> dict:
+        plan = dict(download_plan or {})
+        home_position = plan.get("home_position")
+        if home_position:
+            self.home_position = dict(home_position or {})
+        auto_route_overrides = dict(plan.get("auto_route_overrides") or {})
+        waypoints = [dict(wp) for wp in (plan.get("waypoints") or [])]
+        self.waypoints = waypoints
+        active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
+        if self.home_position:
+            self.map_controller.set_home_position(self.home_position)
+            self.waypoint_content.set_home_waypoint(self.home_position, vehicle_id=active_vehicle_id or None)
+        else:
+            self.map_controller.set_home_position(None)
+            self.waypoint_content.set_home_waypoint(None, vehicle_id=active_vehicle_id or None)
+        self.waypoint_content.set_auto_route_overrides(auto_route_overrides, vehicle_id=active_vehicle_id or None)
+        self.waypoint_content.set_waypoints(waypoints, vehicle_id=active_vehicle_id or None)
+        return {
+            "total_downloaded": int(plan.get("total_downloaded", len(waypoints)) or 0),
+            "visible_count": int(plan.get("visible_count", len(waypoints)) or 0),
+            "waypoints": waypoints,
+        }
+
+    def _verify_uploaded_mission_roundtrip(self, thread, visible_waypoints: list[dict], link_label: str) -> dict:
+        total = max(1, len(visible_waypoints or []))
+        self.waypoint_content.set_transfer_progress(
+            "upload",
+            total,
+            total,
+            100,
+            f"[{link_label}] 上传完成，正在自动回读校验…",
+            True,
+        )
+        QApplication.processEvents()
+
+        downloaded = thread.download_mission()
+        try:
+            thread.request_home_position(timeout=2.0)
+        except Exception:
+            pass
+        self._sync_home_position_from_status()
+
+        download_plan = self.mission_sync_service.prepare_download(
+            [dict(wp) for wp in (downloaded or [])],
+            existing_home_position=self.home_position,
+            auto_route_items=self.waypoint_content.get_auto_route_items(),
+        )
+        applied = self._apply_download_plan_to_ui(download_plan)
+        self.refresh_map_waypoints(recenter=bool(applied.get("waypoints")))
+
+        verification = self.mission_sync_service.verify_roundtrip(
+            [dict(wp) for wp in (visible_waypoints or [])],
+            [dict(wp) for wp in (downloaded or [])],
+            home_position=self.home_position or getattr(self.waypoint_content, "_home_wp", None),
+            auto_route_items=self.waypoint_content.get_auto_route_items(),
+        )
+        verification["verified"] = True
+        verification["total_downloaded"] = int(applied.get("total_downloaded", 0) or 0)
+        verification["visible_count"] = int(applied.get("visible_count", len(visible_waypoints or [])) or 0)
+        return verification
+
     def _validate_upload_waypoints(self, waypoints: list[dict]) -> tuple[bool, str]:
         return self.mission_sync_service.validate_upload_waypoints(waypoints)
 
@@ -2691,6 +2727,39 @@ class DroneGroundStation(QMainWindow):
             )
             self._mission_transfer_active = self.mission_transfer_controller.active
             thread.upload_mission(mission_waypoints)
+
+            verification = {
+                "verified": False,
+                "matched": False,
+                "summary": "上传成功，自动回读校验未执行",
+                "mismatch_count": 0,
+                "messages": [],
+            }
+            try:
+                verification = self._verify_uploaded_mission_roundtrip(thread, list(waypoints or []), link_label)
+                self.log_user_action(
+                    "mission_roundtrip_verified",
+                    matched=1 if verification.get("matched") else 0,
+                    mismatch_count=int(verification.get("mismatch_count", 0) or 0),
+                    link=link_label,
+                    link_key=link_key,
+                )
+            except Exception as verify_exc:
+                self.app_logger.exception("mission roundtrip verification failed")
+                verification = {
+                    "verified": False,
+                    "matched": False,
+                    "summary": f"上传成功，但自动回读校验失败：{verify_exc}",
+                    "mismatch_count": 1,
+                    "messages": [str(verify_exc)],
+                }
+                self.log_user_action(
+                    "mission_roundtrip_verify_failed",
+                    error=str(verify_exc),
+                    link=link_label,
+                    link_key=link_key,
+                )
+
             self._cache_link_context(link_key, include_params=False, include_mission=True)
             self._sync_active_vehicle_context_metrics(include_params=False, include_mission=True)
             self._apply_transfer_progress_payload(
@@ -2704,10 +2773,20 @@ class DroneGroundStation(QMainWindow):
                 link=link_label,
                 link_key=link_key,
             )
-            self._show_auto_notice(
-                "上传成功",
-                f"[{link_label}] 已向飞控上传 {display_count} 个任务点（WP0=Home 占位）"
-            )
+            success_message = f"[{link_label}] 已向飞控上传 {display_count} 个任务点（WP0=Home 占位）"
+            if verification.get("matched"):
+                success_message += "，自动回读校验通过"
+            elif verification.get("verified"):
+                success_message += f"，但回读校验发现 {int(verification.get('mismatch_count', 0) or 0)} 处差异"
+            else:
+                success_message += "，但自动回读校验未完成"
+            self._show_auto_notice("上传成功", success_message)
+            if not verification.get("matched"):
+                detail_text = "；".join(str(item) for item in (verification.get("messages") or [])[:2])
+                verify_message = str(verification.get("summary", "自动回读校验未通过"))
+                if detail_text:
+                    verify_message = f"{verify_message}：{detail_text}"
+                self._show_auto_notice("回读校验", verify_message, duration_ms=4500)
         except Exception as exc:
             self.app_logger.exception("mission upload failed")
             failure = self.mission_transfer_controller.finish_failure("upload", str(exc))
@@ -2748,21 +2827,12 @@ class DroneGroundStation(QMainWindow):
                 existing_home_position=self.home_position,
                 auto_route_items=self.waypoint_content.get_auto_route_items(),
             )
-            if download_plan.get("home_position"):
-                self.home_position = dict(download_plan.get("home_position") or {})
-            auto_route_overrides = dict(download_plan.get("auto_route_overrides") or {})
-            waypoints = [dict(wp) for wp in (download_plan.get("waypoints") or [])]
-            self.waypoints = waypoints
-            active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
-            if self.home_position:
-                self.map_controller.set_home_position(self.home_position)
-                self.waypoint_content.set_home_waypoint(self.home_position, vehicle_id=active_vehicle_id or None)
-            self.waypoint_content.set_auto_route_overrides(auto_route_overrides, vehicle_id=active_vehicle_id or None)
-            self.waypoint_content.set_waypoints(waypoints, vehicle_id=active_vehicle_id or None)
+            applied = self._apply_download_plan_to_ui(download_plan)
             self._cache_link_context(link_key, include_params=False, include_mission=True)
             self._sync_active_vehicle_context_metrics(include_params=False, include_mission=True)
-            total_downloaded = int(download_plan.get("total_downloaded", len(downloaded or [])) or 0)
-            visible_count = int(download_plan.get("visible_count", len(waypoints)) or 0)
+            total_downloaded = int(applied.get("total_downloaded", len(downloaded or [])) or 0)
+            visible_count = int(applied.get("visible_count", len(self.waypoints)) or 0)
+            waypoints = [dict(wp) for wp in (applied.get("waypoints") or [])]
             self._apply_transfer_progress_payload(
                 self.mission_transfer_controller.finish_success("download", link_label, current=total_downloaded, total=total_downloaded)
             )

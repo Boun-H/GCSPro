@@ -34,6 +34,8 @@ class AnalyzePanelTests(unittest.TestCase):
         self.assertEqual(panel.chart_widget.max_points, 5)
         self.assertNotIn("battery", panel.chart_widget.visible_series_names())
         self.assertIn("最近更新", panel.updated_at.text())
+        self.assertIn("自动飞行报告", panel.flight_report_text.toPlainText())
+        self.assertIn("最大高度", panel.flight_report_text.toPlainText())
 
 if __name__ == "__main__":
     unittest.main()

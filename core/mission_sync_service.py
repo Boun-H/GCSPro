@@ -87,6 +87,75 @@ class MissionSyncService:
         summary.update({"valid": bool(valid), "message": str(message or "")})
         return summary
 
+    @staticmethod
+    def _visible_compare_rows(items: list[dict]) -> list[dict]:
+        rows: list[dict] = []
+        for item in (items or []):
+            data = dict(item or {})
+            if str(data.get("name", "") or "").upper() == "HOME":
+                continue
+            rows.append(
+                {
+                    "type": str(data.get("type", "WAYPOINT") or "WAYPOINT").upper(),
+                    "command": int(data.get("command", 0) or 0),
+                    "lat": float(data.get("lat", 0.0) or 0.0),
+                    "lon": float(data.get("lon", 0.0) or 0.0),
+                    "alt": float(data.get("alt", 0.0) or 0.0),
+                }
+            )
+        return rows
+
+    def verify_roundtrip(
+        self,
+        visible_waypoints: list[dict],
+        downloaded: list[dict],
+        *,
+        home_position: Optional[dict] = None,
+        auto_route_items: Optional[list[dict]] = None,
+        tolerance: float = 1e-5,
+        alt_tolerance: float = 1.0,
+    ) -> dict:
+        upload_plan = self.prepare_upload(list(visible_waypoints or []), list(auto_route_items or []), home_position)
+        download_plan = self.prepare_download(
+            list(downloaded or []),
+            existing_home_position=home_position,
+            auto_route_items=list(auto_route_items or []),
+        )
+        expected_rows = self._visible_compare_rows(upload_plan.get("mission_waypoints") or [])
+        actual_rows = self._visible_compare_rows(download_plan.get("waypoints") or [])
+        messages: list[str] = []
+
+        if len(expected_rows) != len(actual_rows):
+            messages.append(f"任务点数量不一致: 期望 {len(expected_rows)}，回读 {len(actual_rows)}")
+
+        for index, (expected, actual) in enumerate(zip(expected_rows, actual_rows), start=1):
+            if expected["type"] != actual["type"] or expected["command"] != actual["command"]:
+                messages.append(
+                    f"第 {index} 点类型不一致: {expected['type']}/{expected['command']} -> {actual['type']}/{actual['command']}"
+                )
+                continue
+            if abs(expected["lat"] - actual["lat"]) > tolerance or abs(expected["lon"] - actual["lon"]) > tolerance:
+                messages.append(
+                    f"第 {index} 点坐标偏移: ({expected['lat']:.6f}, {expected['lon']:.6f}) -> ({actual['lat']:.6f}, {actual['lon']:.6f})"
+                )
+            if abs(expected["alt"] - actual["alt"]) > alt_tolerance:
+                messages.append(f"第 {index} 点高度偏移: {expected['alt']:.1f}m -> {actual['alt']:.1f}m")
+
+        matched = len(messages) == 0
+        summary = (
+            f"上传回读校验通过：{len(actual_rows)}/{len(expected_rows)} 个任务点一致"
+            if matched
+            else f"上传回读校验发现 {len(messages)} 处差异"
+        )
+        return {
+            "matched": matched,
+            "summary": summary,
+            "mismatch_count": len(messages),
+            "messages": messages,
+            "expected_count": len(expected_rows),
+            "actual_count": len(actual_rows),
+        }
+
     def prepare_download(
         self,
         downloaded: list[dict],

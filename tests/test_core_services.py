@@ -7,7 +7,9 @@ from core.health_monitor import HealthMonitor
 from core.link_session_service import LinkSessionService
 from core.mission_sync_service import MissionSyncService
 from core.mission_transfer_controller import MissionTransferController
+from core.notification_controller import NotificationController
 from core.setup_wizard_service import SetupWizardService
+from core.telemetry_status_controller import TelemetryStatusController
 from core.vehicle_context_service import VehicleContextService
 
 
@@ -54,16 +56,20 @@ class CoreServiceTests(unittest.TestCase):
     def test_analyze_service_tracks_history_and_exports_csv(self):
         service = AnalyzeService(history_limit=5)
 
-        service.ingest_status({"mode": "AUTO", "battery_remaining": 91, "alt": 20.0, "vel": 8.5, "gps": 12, "volt": 11.6}, timestamp="10:00:00")
-        report = service.ingest_status({"mode": "AUTO", "battery_remaining": 84, "alt": 36.0, "vel": 12.2, "gps": 13, "volt": 11.4}, timestamp="10:00:05")
+        service.ingest_status({"mode": "QGUIDED", "battery_remaining": 91, "alt": 20.0, "vel": 8.5, "gps": 12, "volt": 11.6}, timestamp="10:00:00")
+        report = service.ingest_status({"mode": "AUTO", "battery_remaining": 24, "alt": 36.0, "vel": 12.2, "gps": 5, "volt": 11.4}, timestamp="10:00:05")
         chart_text = service.build_chart_text(["alt", "vel", "gps"], 5)
         csv_text = service.export_csv_text()
+        flight_report = service.build_flight_report()
 
-        self.assertEqual(service.history()["battery"][-1], 84.0)
+        self.assertEqual(service.history()["battery"][-1], 24.0)
         self.assertIn("高度趋势", chart_text)
         self.assertIn("CSV 导出", chart_text)
         self.assertIn("timestamp,battery,alt,vel,gps", csv_text)
         self.assertIn("模式 AUTO", report["chart_summary"])
+        self.assertIn("自动飞行报告", flight_report)
+        self.assertIn("最大高度", flight_report)
+        self.assertIn("模式切换", flight_report)
 
     def test_command_router_centralizes_flight_command_metadata(self):
         confirm = CommandRouter.confirmation_for("vtol_qrtl")
@@ -144,6 +150,24 @@ class CoreServiceTests(unittest.TestCase):
             {"seq": 0, "name": "HOME", "lat": 39.0, "lon": 116.0, "alt": 35.0},
             {"seq": 1, "name": "WP1", "lat": 39.1, "lon": 116.2, "alt": 100.0},
         ])
+        verify_pass = MissionSyncService().verify_roundtrip(
+            [{"lat": 39.1, "lon": 116.2, "alt": 100, "name": "WP1"}],
+            [
+                {"seq": 0, "name": "HOME", "lat": 39.0, "lon": 116.0, "alt": 35.0},
+                {"seq": 1, "name": "WP1", "lat": 39.1, "lon": 116.2, "alt": 100.0},
+            ],
+            home_position={"lat": 39.0, "lon": 116.0, "alt": 35.0},
+            auto_route_items=[],
+        )
+        verify_fail = MissionSyncService().verify_roundtrip(
+            [{"lat": 39.1, "lon": 116.2, "alt": 100, "name": "WP1"}],
+            [
+                {"seq": 0, "name": "HOME", "lat": 39.0, "lon": 116.0, "alt": 35.0},
+                {"seq": 1, "name": "WP1", "lat": 39.15, "lon": 116.2, "alt": 120.0},
+            ],
+            home_position={"lat": 39.0, "lon": 116.0, "alt": 35.0},
+            auto_route_items=[],
+        )
 
         self.assertTrue(valid, msg=message)
         self.assertEqual(mission_waypoints[0]["name"], "HOME")
@@ -151,6 +175,10 @@ class CoreServiceTests(unittest.TestCase):
         self.assertEqual(upload_summary["display_count"], 1)
         self.assertEqual(download_summary["visible_count"], 1)
         self.assertEqual(download_summary["home_position"]["source"], "mission_wp0")
+        self.assertTrue(verify_pass["matched"])
+        self.assertIn("校验通过", verify_pass["summary"])
+        self.assertFalse(verify_fail["matched"])
+        self.assertGreaterEqual(verify_fail["mismatch_count"], 1)
 
     def test_connection_controller_plans_dialog_submission(self):
         controller = ConnectionController()
@@ -191,6 +219,20 @@ class CoreServiceTests(unittest.TestCase):
         self.assertEqual(success["percent"], 100)
         self.assertFalse(success["active"])
         self.assertEqual(failure["status_text"], "上传失败")
+
+    def test_notification_and_telemetry_controllers_build_ui_payloads(self):
+        notice = NotificationController.build_notice("上传成功", "任务已同步")
+        error_notice = NotificationController.connection_error_notice("连接中断，自动重连中")
+        connection_view = TelemetryStatusController.connection_view("connected")
+        chip_tones = TelemetryStatusController.chip_tones({"battery_remaining": 22, "gps": 5, "volt": 10.4})
+        labels = TelemetryStatusController.telemetry_labels({"battery_remaining": 88, "alt": 120.5, "vel": 12.3, "mode": "AUTO", "gps": 13, "volt": 11.7})
+
+        self.assertEqual(notice["level"], "ok")
+        self.assertEqual(error_notice["title"], "连接状态")
+        self.assertEqual(connection_view["tone"], "ok")
+        self.assertEqual(chip_tones["battery"], "danger")
+        self.assertIn("高度: 120.5m", labels["altitude"])
+        self.assertIn("GPS: 13 颗", labels["gps"])
 
 
 if __name__ == "__main__":

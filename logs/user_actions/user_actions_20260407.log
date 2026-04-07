@@ -40,3 +40,23 @@
 2026-04-07 10:16:28 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
 2026-04-07 10:16:28 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
 2026-04-07 10:16:28 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
+2026-04-07 10:28:20 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:20 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:20 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
+2026-04-07 10:28:30 - GCS.UserAction - INFO - {"action": "connection_dialog_opened", "details": {}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:31 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:28:35 - GCS.UserAction - INFO - {"action": "connection_requested", "details": {"connection_type": "serial", "port": "COM6", "baud": 115200}}
+2026-04-07 10:28:35 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:28:35 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:49:20 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 10:49:20 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 10:49:20 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
