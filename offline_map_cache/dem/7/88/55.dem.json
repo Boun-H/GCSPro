@@ -1,0 +1,18 @@
+{
+  "format": "float32_le",
+  "source": "terrarium",
+  "z": 7,
+  "x": 88,
+  "y": 55,
+  "width": 256,
+  "height": 256,
+  "min_elevation_m": -1817.0,
+  "max_elevation_m": 397.0,
+  "bounds": {
+    "west": 67.5,
+    "east": 70.3125,
+    "north": 24.5271348225978,
+    "south": 21.943045533438177
+  },
+  "data_file": "55.dem.bin"
+}

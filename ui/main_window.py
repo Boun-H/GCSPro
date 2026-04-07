@@ -55,12 +55,15 @@ from core.command_router import CommandRouter
 from core.data_recorder import DataRecorder
 from core.health_monitor import HealthMonitor
 from core.link_manager import MultiLinkManager
+from core.link_session_service import LinkSessionService
 from core.fact_panel_controller import FactPanelController
 from core.firmware_plugin import resolve_plugins
 from core.firmware_tools import build_firmware_upgrade_plan, build_parameter_validation_report, inspect_firmware_image
-from core.mission import RouteConfig, build_upload_waypoints, split_downloaded_mission, validate_upload_waypoints
+from core.mission import RouteConfig
+from core.mission_sync_service import MissionSyncService
 from core.parameter_manager import ParameterManager
 from core.settings_manager import SettingsManager
+from core.vehicle_context_service import VehicleContextService
 from core.vehicle_manager import VehicleManager
 from core.logger import UserActionLogger, get_app_logger
 from core.constants import (
@@ -475,6 +478,9 @@ class DroneGroundStation(QMainWindow):
         metadata_xml = Path(__file__).resolve().parent.parent / "references" / "ardupilot" / "ParameterFactMetaData.xml"
         self.parameter_manager = ParameterManager(metadata_xml_path=str(metadata_xml))
         self.settings_manager = SettingsManager()
+        self.link_session_service = LinkSessionService()
+        self.vehicle_context_service = VehicleContextService()
+        self.mission_sync_service = MissionSyncService()
         self.vehicle_manager = VehicleManager(self)
         self._firmware_plugin, self._autopilot_plugin = resolve_plugins({}, None)
         self.fact_panel_controller = FactPanelController(
@@ -523,10 +529,6 @@ class DroneGroundStation(QMainWindow):
         self._last_auto_route_preview_ts = 0.0
         self._last_link_label = ""
         self._current_active_link_key = ""
-        self._params_by_link = {}
-        self._mission_context_by_link = {}
-        self._params_by_vehicle = {}
-        self._mission_context_by_vehicle = {}
         self._mp_action_handlers = {}
 
         self.init_ui()
@@ -961,25 +963,7 @@ class DroneGroundStation(QMainWindow):
 
     def _connect_recent_link(self, entry: dict, show_notice: bool = True):
         item = dict(entry or {})
-        kind = str(item.get("kind", "")).strip().lower()
-        payload = dict(item.get("payload", {}) or {})
-        if kind == "serial":
-            port = str(payload.get("port", "")).strip()
-            baud = int(payload.get("baud", 115200) or 115200)
-            self._last_link_label = f"串口 {port}@{baud}"
-            self.connection_manager.connect_serial(port, baud)
-        elif kind == "tcp":
-            host = str(payload.get("host", "127.0.0.1") or "127.0.0.1").strip()
-            port = int(payload.get("port", 5760) or 5760)
-            self._last_link_label = f"TCP {host}:{port}"
-            self.connection_manager.connect_tcp(host, port)
-        elif kind == "udp":
-            host = str(payload.get("host", "0.0.0.0") or "0.0.0.0").strip()
-            port = int(payload.get("port", 14550) or 14550)
-            self._last_link_label = f"UDP {host}:{port}"
-            self.connection_manager.connect_udp(host, port)
-        else:
-            raise ValueError(f"不支持的历史链路类型: {kind}")
+        self._last_link_label = self.link_session_service.connect_recent_entry(self.connection_manager, item)
         if show_notice:
             self._show_auto_notice("提示", f"正在连接最近链路：{item.get('label', self._last_link_label)}")
 
@@ -1004,15 +988,15 @@ class DroneGroundStation(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        values = dialog.values()
-        self.settings_manager.update_serial_defaults(values["serial"].get("port", ""), values["serial"].get("baud", 115200), persist=False)
-        self.settings_manager.update_tcp_defaults(values["tcp"].get("host", "127.0.0.1"), values["tcp"].get("port", 5760), persist=False)
-        self.settings_manager.update_udp_defaults(values["udp"].get("host", "0.0.0.0"), values["udp"].get("port", 14550), persist=False)
-        self.settings_manager.set("connections.auto_reconnect", bool(values.get("auto_reconnect", True)), persist=False)
-        self.settings_manager.set("connections.auto_connect", bool(values.get("auto_connect", False)), persist=False)
-        self.settings_manager.set("ui.map_source", values.get("map_source", self.current_map), persist=False)
+        settings_payload = self.link_session_service.build_settings_payload(dialog.values())
+        self.settings_manager.update_serial_defaults(settings_payload["serial"].get("port", ""), settings_payload["serial"].get("baud", 115200), persist=False)
+        self.settings_manager.update_tcp_defaults(settings_payload["tcp"].get("host", "127.0.0.1"), settings_payload["tcp"].get("port", 5760), persist=False)
+        self.settings_manager.update_udp_defaults(settings_payload["udp"].get("host", "0.0.0.0"), settings_payload["udp"].get("port", 14550), persist=False)
+        self.settings_manager.set("connections.auto_reconnect", settings_payload["auto_reconnect"], persist=False)
+        self.settings_manager.set("connections.auto_connect", settings_payload["auto_connect"], persist=False)
+        self.settings_manager.set("ui.map_source", settings_payload["map_source"], persist=False)
         self.settings_manager.save()
-        self.current_map = str(values.get("map_source", self.current_map) or self.current_map)
+        self.current_map = str(settings_payload["map_source"] or self.current_map)
         if hasattr(self, "cmb_map"):
             self.cmb_map.setCurrentText(self.current_map)
         self._load_saved_connection_settings()
@@ -1647,43 +1631,39 @@ class DroneGroundStation(QMainWindow):
 
     def _active_link_context(self) -> tuple[str, str]:
         active = self.connection_manager.active_link_summary() if hasattr(self.connection_manager, "active_link_summary") else None
-        link_key = str((active or {}).get("key", "") or "")
-        link_label = str((active or {}).get("label", self._last_link_label) or self._last_link_label or "当前链路")
-        return link_key, link_label
+        return self.link_session_service.resolve_active_link_context(active, self._last_link_label)
 
     def _cache_vehicle_context(self, vehicle_id: str | None = None, include_params: bool = True, include_mission: bool = True):
         active = self.vehicle_manager.active_vehicle() or {}
         target_vehicle_id = str(vehicle_id or active.get("vehicle_id", "") or "").strip()
         if not target_vehicle_id:
             return
-        if include_params:
-            values = self.parameter_manager.fact_system.values_dict()
-            if values:
-                self._params_by_vehicle[target_vehicle_id] = dict(values)
-        if include_mission:
-            self._mission_context_by_vehicle[target_vehicle_id] = {
-                "home_position": (dict(self.home_position) if isinstance(self.home_position, dict) else None),
-                "waypoints": [dict(wp) for wp in (self.waypoints or [])],
-                "auto_route_overrides": dict(getattr(self.waypoint_content, "_auto_route_overrides", {}) or {}),
-                "plan_constraints": dict(getattr(self.waypoint_content, "_plan_constraints", {}) or {}),
-            }
+        self.vehicle_context_service.cache_vehicle_context(
+            target_vehicle_id,
+            param_values=self.parameter_manager.fact_system.values_dict(),
+            home_position=self.home_position,
+            waypoints=self.waypoints,
+            auto_route_overrides=dict(getattr(self.waypoint_content, "_auto_route_overrides", {}) or {}),
+            plan_constraints=dict(getattr(self.waypoint_content, "_plan_constraints", {}) or {}),
+            include_params=include_params,
+            include_mission=include_mission,
+        )
 
     def _cache_link_context(self, link_key: str | None = None, include_params: bool = True, include_mission: bool = True):
         self._cache_vehicle_context(include_params=include_params, include_mission=include_mission)
         target_key = str(link_key or self._active_link_context()[0]).strip()
         if not target_key:
             return
-        if include_params:
-            values = self.parameter_manager.fact_system.values_dict()
-            if values:
-                self._params_by_link[target_key] = dict(values)
-        if include_mission:
-            self._mission_context_by_link[target_key] = {
-                "home_position": (dict(self.home_position) if isinstance(self.home_position, dict) else None),
-                "waypoints": [dict(wp) for wp in (self.waypoints or [])],
-                "auto_route_overrides": dict(getattr(self.waypoint_content, "_auto_route_overrides", {}) or {}),
-                "plan_constraints": dict(getattr(self.waypoint_content, "_plan_constraints", {}) or {}),
-            }
+        self.vehicle_context_service.cache_link_context(
+            target_key,
+            param_values=self.parameter_manager.fact_system.values_dict(),
+            home_position=self.home_position,
+            waypoints=self.waypoints,
+            auto_route_overrides=dict(getattr(self.waypoint_content, "_auto_route_overrides", {}) or {}),
+            plan_constraints=dict(getattr(self.waypoint_content, "_plan_constraints", {}) or {}),
+            include_params=include_params,
+            include_mission=include_mission,
+        )
 
     def _restore_link_context(self, link: dict | None):
         item = dict(link or {})
@@ -1694,22 +1674,15 @@ class DroneGroundStation(QMainWindow):
         active_vehicle_id = str(active_vehicle.get("vehicle_id", "") or "").strip()
         vehicle_link_key = self._find_link_key_for_vehicle(active_vehicle) if active_vehicle_id else ""
 
-        params = None
-        if active_vehicle_id and vehicle_link_key == link_key:
-            params = self._params_by_vehicle.get(active_vehicle_id)
-        if not params:
-            params = self._params_by_link.get(link_key)
+        restored = self.vehicle_context_service.resolve_link_context(link_key, active_vehicle_id=active_vehicle_id, vehicle_link_key=vehicle_link_key)
+        params = restored.get("params")
         if params:
             self.parameter_manager.fact_system.update_values(params)
             self.param_content.set_fact_system(self.parameter_manager.fact_system)
             self.param_content.set_parameters(params, vehicle_id=active_vehicle_id or None)
             self.param_content.mark_status(f"已切换到 {item.get('label', '当前链路')} 的参数缓存", vehicle_id=active_vehicle_id or None)
 
-        mission = None
-        if active_vehicle_id and vehicle_link_key == link_key:
-            mission = self._mission_context_by_vehicle.get(active_vehicle_id)
-        if mission is None:
-            mission = self._mission_context_by_link.get(link_key)
+        mission = restored.get("mission")
         if mission is None:
             self._sync_active_vehicle_context_metrics(include_params=bool(params), include_mission=False)
             return
@@ -1727,31 +1700,22 @@ class DroneGroundStation(QMainWindow):
         vehicle_id = str(active.get("vehicle_id", "") or "")
         if not vehicle_id:
             return
-        payload = {}
-        if include_params:
-            params = self.parameter_manager.fact_system.values_dict()
-            payload["params_total"] = len(params)
-            payload["params_modified"] = len(self.param_content.modified_parameters()) if hasattr(self, "param_content") else 0
-        if include_mission:
-            payload["mission_count"] = len(self.waypoints or [])
-            payload["auto_route_count"] = len(self.waypoint_content.get_auto_route_items()) if hasattr(self, "waypoint_content") else 0
-            payload["home_set"] = bool(self.home_position or getattr(self.waypoint_content, "_home_wp", None))
-        if payload:
-            self.vehicle_manager.update_vehicle_context(vehicle_id, **payload)
+        metrics = self.vehicle_context_service.build_vehicle_metrics(
+            vehicle_id,
+            param_values=self.parameter_manager.fact_system.values_dict(),
+            modified_count=len(self.param_content.modified_parameters()) if hasattr(self, "param_content") else 0,
+            waypoints=self.waypoints,
+            auto_route_count=len(self.waypoint_content.get_auto_route_items()) if hasattr(self, "waypoint_content") else 0,
+            home_set=bool(self.home_position or getattr(self.waypoint_content, "_home_wp", None)),
+            include_params=include_params,
+            include_mission=include_mission,
+        )
+        if metrics.get("payload"):
+            self.vehicle_manager.update_vehicle_context(metrics["vehicle_id"], **metrics["payload"])
 
     def _find_link_key_for_vehicle(self, vehicle: dict | None) -> str:
-        item = dict(vehicle or {})
-        direct_key = str(item.get("link_key", "") or "").strip()
-        if direct_key:
-            return direct_key
-        target = str(item.get("link_name", "") or "").strip()
-        if not target or not hasattr(self.connection_manager, "link_summaries"):
-            return ""
-        for link in self.connection_manager.link_summaries():
-            label = str(link.get("label", "") or "").strip()
-            if label and (target == label or target.endswith(label)):
-                return str(link.get("key", "") or "")
-        return ""
+        summaries = self.connection_manager.link_summaries() if hasattr(self.connection_manager, "link_summaries") else []
+        return self.vehicle_context_service.find_link_key_for_vehicle(vehicle, summaries)
 
     def _thread_for_vehicle(self, vehicle_id: str):
         detail = self.vehicle_manager.vehicle_detail(vehicle_id) or {}
@@ -2639,51 +2603,36 @@ class DroneGroundStation(QMainWindow):
 
     def _build_upload_waypoints(self, visible_waypoints: list[dict]) -> list[dict]:
         home_source = self.home_position or getattr(self.waypoint_content, "_home_wp", None)
-        return build_upload_waypoints(
+        return self.mission_sync_service.build_upload_waypoints(
             visible_waypoints,
             self.waypoint_content.get_auto_route_items(),
             home_source,
         )
 
     def _restore_home_from_downloaded_mission(self, downloaded: list[dict]):
-        if self.home_position:
+        report = self.mission_sync_service.describe_download(
+            [dict(wp) for wp in (downloaded or [])],
+            existing_home_position=self.home_position,
+            auto_route_items=self.waypoint_content.get_auto_route_items(),
+        )
+        home_position = report.get("home_position")
+        if not home_position:
             return
-        for item in (downloaded or []):
-            try:
-                seq = int((item or {}).get("seq", -1) or -1)
-                name = str((item or {}).get("name", "") or "").upper()
-                wp_type = str((item or {}).get("type", "") or "").upper()
-                if seq != 0 and name != "HOME" and wp_type != "HOME":
-                    continue
-                lat = float((item or {}).get("lat", 0.0) or 0.0)
-                lon = float((item or {}).get("lon", 0.0) or 0.0)
-                alt = float((item or {}).get("alt", 0.0) or 0.0)
-            except Exception:
-                continue
-            if not (math.isfinite(lat) and math.isfinite(lon)):
-                continue
-            active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
-            self.home_position = {
-                "type": "HOME",
-                "lat": lat,
-                "lon": lon,
-                "alt": alt,
-                "source": "mission_wp0",
-            }
-            self.map_controller.set_home_position(self.home_position)
-            self.waypoint_content.set_home_waypoint(self.home_position, vehicle_id=active_vehicle_id or None)
-            return
+        active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
+        self.home_position = dict(home_position)
+        self.map_controller.set_home_position(self.home_position)
+        self.waypoint_content.set_home_waypoint(self.home_position, vehicle_id=active_vehicle_id or None)
 
     def _split_downloaded_mission(self, downloaded: list[dict]) -> tuple[dict[str, dict], list[dict]]:
-        return split_downloaded_mission(
+        report = self.mission_sync_service.describe_download(
             [dict(wp) for wp in (downloaded or [])],
-            self.home_position,
-            self.waypoint_content.get_auto_route_items(),
+            existing_home_position=self.home_position,
+            auto_route_items=self.waypoint_content.get_auto_route_items(),
         )
+        return dict(report.get("auto_route_overrides") or {}), [dict(wp) for wp in (report.get("waypoints") or [])]
 
-    @staticmethod
-    def _validate_upload_waypoints(waypoints: list[dict]) -> tuple[bool, str]:
-        return validate_upload_waypoints(waypoints)
+    def _validate_upload_waypoints(self, waypoints: list[dict]) -> tuple[bool, str]:
+        return self.mission_sync_service.validate_upload_waypoints(waypoints)
 
     def upload_waypoints_to_vehicle(self, waypoints):
         active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
@@ -2709,15 +2658,21 @@ class DroneGroundStation(QMainWindow):
         self._mission_transfer_active = True
         self.connection_manager.suppress_watchdog(True)
         try:
-            mission_waypoints = self._build_upload_waypoints(waypoints)
-            valid, message = self._validate_upload_waypoints(mission_waypoints)
+            upload_plan = self.mission_sync_service.prepare_upload(
+                list(waypoints or []),
+                self.waypoint_content.get_auto_route_items(),
+                self.home_position or getattr(self.waypoint_content, "_home_wp", None),
+            )
+            mission_waypoints = list(upload_plan.get("mission_waypoints") or [])
+            valid = bool(upload_plan.get("valid", False))
+            message = str(upload_plan.get("message", "") or "")
             if not valid:
                 self.waypoint_content.clear_transfer_progress("上传中止")
                 self._show_auto_notice("上传中止", message)
                 self.log_user_action("mission_upload_blocked", reason=message)
                 return
-            has_home_item = (mission_waypoints and str(mission_waypoints[0].get('name', '')) == 'HOME')
-            display_count = len(mission_waypoints) - (1 if has_home_item else 0)
+            has_home_item = bool(upload_plan.get("has_home_item", False))
+            display_count = int(upload_plan.get("display_count", len(waypoints or [])) or 0)
             self.app_logger.info(
                 "mission upload start: visible=%s total=%s include_home=%s auto_route=%s state=%s",
                 len(waypoints or []),
@@ -2775,18 +2730,29 @@ class DroneGroundStation(QMainWindow):
             downloaded = thread.download_mission()
             thread.request_home_position(timeout=2.0)
             self._sync_home_position_from_status()
-            self._restore_home_from_downloaded_mission([dict(wp) for wp in (downloaded or [])])
-            auto_route_overrides, waypoints = self._split_downloaded_mission([dict(wp) for wp in (downloaded or [])])
+            download_plan = self.mission_sync_service.prepare_download(
+                [dict(wp) for wp in (downloaded or [])],
+                existing_home_position=self.home_position,
+                auto_route_items=self.waypoint_content.get_auto_route_items(),
+            )
+            if download_plan.get("home_position"):
+                self.home_position = dict(download_plan.get("home_position") or {})
+            auto_route_overrides = dict(download_plan.get("auto_route_overrides") or {})
+            waypoints = [dict(wp) for wp in (download_plan.get("waypoints") or [])]
             self.waypoints = waypoints
             active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
+            if self.home_position:
+                self.map_controller.set_home_position(self.home_position)
+                self.waypoint_content.set_home_waypoint(self.home_position, vehicle_id=active_vehicle_id or None)
             self.waypoint_content.set_auto_route_overrides(auto_route_overrides, vehicle_id=active_vehicle_id or None)
             self.waypoint_content.set_waypoints(waypoints, vehicle_id=active_vehicle_id or None)
             self._cache_link_context(link_key, include_params=False, include_mission=True)
             self._sync_active_vehicle_context_metrics(include_params=False, include_mission=True)
-            total_downloaded = len(downloaded or [])
+            total_downloaded = int(download_plan.get("total_downloaded", len(downloaded or [])) or 0)
+            visible_count = int(download_plan.get("visible_count", len(waypoints)) or 0)
             self.waypoint_content.set_transfer_progress('download', total_downloaded, total_downloaded, 100, f'{link_label} 航线下载完成', False)
             self.refresh_map_waypoints(recenter=bool(waypoints))
-            self.log_user_action("mission_downloaded", total=total_downloaded, visible=len(waypoints), home=1 if self.home_position else 0, link=link_label, link_key=link_key)
+            self.log_user_action("mission_downloaded", total=total_downloaded, visible=visible_count, home=1 if self.home_position else 0, link=link_label, link_key=link_key)
             self._show_auto_notice(
                 "下载成功",
                 f"[{link_label}] 已下载 {total_downloaded} 个航点，真实 Home 点已单独同步"
