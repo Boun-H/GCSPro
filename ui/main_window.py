@@ -52,6 +52,7 @@ from .gcs_dialogs import gcs_confirm, gcs_warning, gcs_info, _DIALOG_STYLE
 from core.alarm_system import AlarmSystem
 from core.analyze_tools import discover_log_files, preview_log_file, summarize_log_files
 from core.command_router import CommandRouter
+from core.connection_controller import ConnectionController
 from core.data_recorder import DataRecorder
 from core.health_monitor import HealthMonitor
 from core.link_manager import MultiLinkManager
@@ -61,6 +62,7 @@ from core.firmware_plugin import resolve_plugins
 from core.firmware_tools import build_firmware_upgrade_plan, build_parameter_validation_report, inspect_firmware_image
 from core.mission import RouteConfig
 from core.mission_sync_service import MissionSyncService
+from core.mission_transfer_controller import MissionTransferController
 from core.parameter_manager import ParameterManager
 from core.settings_manager import SettingsManager
 from core.vehicle_context_service import VehicleContextService
@@ -479,8 +481,10 @@ class DroneGroundStation(QMainWindow):
         self.parameter_manager = ParameterManager(metadata_xml_path=str(metadata_xml))
         self.settings_manager = SettingsManager()
         self.link_session_service = LinkSessionService()
+        self.connection_controller = ConnectionController(self.link_session_service)
         self.vehicle_context_service = VehicleContextService()
         self.mission_sync_service = MissionSyncService()
+        self.mission_transfer_controller = MissionTransferController(self.mission_sync_service)
         self.vehicle_manager = VehicleManager(self)
         self._firmware_plugin, self._autopilot_plugin = resolve_plugins({}, None)
         self.fact_panel_controller = FactPanelController(
@@ -928,12 +932,11 @@ class DroneGroundStation(QMainWindow):
 
     def _load_saved_connection_settings(self):
         try:
-            serial_cfg = self.settings_manager.serial_defaults()
-            tcp_cfg = self.settings_manager.tcp_defaults()
-            udp_cfg = self.settings_manager.udp_defaults()
-            self.connection_manager.configure_reconnect(
-                enabled=bool(self.settings_manager.get("connections.auto_reconnect", True))
-            )
+            context = self.connection_controller.build_saved_context(self.settings_manager, self.current_map)
+            serial_cfg = dict(context.get("serial", {}) or {})
+            tcp_cfg = dict(context.get("tcp", {}) or {})
+            udp_cfg = dict(context.get("udp", {}) or {})
+            self.connection_manager.configure_reconnect(enabled=bool(context.get("auto_reconnect", True)))
             if serial_cfg.get("baud"):
                 self.connect_dialog.cmb_baud.setCurrentText(str(serial_cfg.get("baud")))
             if serial_cfg.get("port"):
@@ -949,12 +952,13 @@ class DroneGroundStation(QMainWindow):
             self.app_logger.exception("failed to load saved connection settings")
 
     def _maybe_auto_connect_last_link(self):
-        if self.connection_manager.state != "disconnected":
-            return
-        if not bool(self.settings_manager.get("connections.auto_connect", False)):
-            return
-        recent_links = self.settings_manager.recent_links()
-        if not recent_links:
+        context = self.connection_controller.build_saved_context(self.settings_manager, self.current_map)
+        recent_links = list(context.get("recent_links", []) or [])
+        if not self.connection_controller.should_auto_connect(
+            self.connection_manager.state,
+            bool(context.get("auto_connect", False)),
+            recent_links,
+        ):
             return
         try:
             self._connect_recent_link(recent_links[0], show_notice=False)
@@ -968,7 +972,7 @@ class DroneGroundStation(QMainWindow):
             self._show_auto_notice("提示", f"正在连接最近链路：{item.get('label', self._last_link_label)}")
 
     def _reconnect_last_link(self):
-        recent_links = self.settings_manager.recent_links()
+        recent_links = list(self.connection_controller.build_saved_context(self.settings_manager, self.current_map).get("recent_links", []) or [])
         if recent_links:
             self._connect_recent_link(recent_links[0], show_notice=True)
             return
@@ -976,26 +980,20 @@ class DroneGroundStation(QMainWindow):
 
     def _open_link_settings(self):
         dialog = LinkSettingsDialog(self)
+        context = self.connection_controller.build_saved_context(self.settings_manager, self.current_map)
         dialog.set_values(
-            self.settings_manager.serial_defaults(),
-            self.settings_manager.tcp_defaults(),
-            self.settings_manager.udp_defaults(),
-            bool(self.settings_manager.get("connections.auto_reconnect", True)),
-            bool(self.settings_manager.get("connections.auto_connect", False)),
-            str(self.settings_manager.get("ui.map_source", self.current_map) or self.current_map),
-            self.settings_manager.recent_links(),
+            context.get("serial", {}),
+            context.get("tcp", {}),
+            context.get("udp", {}),
+            bool(context.get("auto_reconnect", True)),
+            bool(context.get("auto_connect", False)),
+            str(context.get("map_source", self.current_map) or self.current_map),
+            context.get("recent_links", []),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        settings_payload = self.link_session_service.build_settings_payload(dialog.values())
-        self.settings_manager.update_serial_defaults(settings_payload["serial"].get("port", ""), settings_payload["serial"].get("baud", 115200), persist=False)
-        self.settings_manager.update_tcp_defaults(settings_payload["tcp"].get("host", "127.0.0.1"), settings_payload["tcp"].get("port", 5760), persist=False)
-        self.settings_manager.update_udp_defaults(settings_payload["udp"].get("host", "0.0.0.0"), settings_payload["udp"].get("port", 14550), persist=False)
-        self.settings_manager.set("connections.auto_reconnect", settings_payload["auto_reconnect"], persist=False)
-        self.settings_manager.set("connections.auto_connect", settings_payload["auto_connect"], persist=False)
-        self.settings_manager.set("ui.map_source", settings_payload["map_source"], persist=False)
-        self.settings_manager.save()
+        settings_payload = self.connection_controller.save_link_settings(self.settings_manager, dialog.values(), self.current_map)
         self.current_map = str(settings_payload["map_source"] or self.current_map)
         if hasattr(self, "cmb_map"):
             self.cmb_map.setCurrentText(self.current_map)
@@ -1404,50 +1402,42 @@ class DroneGroundStation(QMainWindow):
             return
 
         self.log_user_action("connection_dialog_opened")
-        if self.connect_dialog.exec() == QDialog.DialogCode.Accepted:
-            try:
-                mode_index = self.connect_dialog.stack.currentIndex()
-                if mode_index == 0:
-                    port = self.connect_dialog.cmb_serial.currentData()
-                    if not port:
-                        port = self.connect_dialog.cmb_serial.currentText().split(" - ")[0].strip()
-                    if not port or "未检测到串口" in str(port):
-                        self._pending_manual_success_notice = False
-                        self.log_user_action("connection_failed", error="未检测到可用串口")
-                        self._show_auto_notice("未检测到串口", "请检查驱动/线缆，并点击串口刷新按钮后重试")
-                        return
-                    baud = int(self.connect_dialog.cmb_baud.currentText())
-                    self.settings_manager.update_serial_defaults(port, baud)
-                    self.settings_manager.add_recent_link("serial", f"{port}@{baud}", {"port": port, "baud": baud})
-                    self._last_link_label = f"串口 {port}@{baud}"
-                    self._pending_manual_success_notice = True
-                    self.log_user_action("connection_requested", connection_type="serial", port=port, baud=baud)
-                    self.connection_manager.connect_serial(port, baud)
-                elif mode_index == 1:
-                    ip = self.connect_dialog.edit_ip.text().strip()
-                    port = int(self.connect_dialog.edit_port.text())
-                    self.settings_manager.update_tcp_defaults(ip, port)
-                    self.settings_manager.add_recent_link("tcp", f"TCP {ip}:{port}", {"host": ip, "port": port})
-                    self._last_link_label = f"TCP {ip}:{port}"
-                    self._pending_manual_success_notice = True
-                    self.log_user_action("connection_requested", connection_type="tcp", ip=ip, port=port)
-                    self.connection_manager.connect_tcp(ip, port)
-                else:
-                    host = self.connect_dialog.edit_udp_host.text().strip() or "0.0.0.0"
-                    port = int(self.connect_dialog.edit_udp_port.text())
-                    self.settings_manager.update_udp_defaults(host, port)
-                    self.settings_manager.add_recent_link("udp", f"UDP {host}:{port}", {"host": host, "port": port})
-                    self._last_link_label = f"UDP {host}:{port}"
-                    self._pending_manual_success_notice = True
-                    self.log_user_action("connection_requested", connection_type="udp", host=host, port=port)
-                    self.connection_manager.connect_udp(host, port)
-            except Exception as e:
-                self._pending_manual_success_notice = False
-                self.log_user_action("connection_failed", error=str(e))
-                self._show_auto_notice("连接失败", str(e))
-        else:
+        if self.connect_dialog.exec() != QDialog.DialogCode.Accepted:
             self._pending_manual_success_notice = False
             self.log_user_action("connection_dialog_cancelled")
+            return
+
+        mode_index = self.connect_dialog.stack.currentIndex()
+        raw_values = {
+            0: {
+                "port": self.connect_dialog.cmb_serial.currentData() or self.connect_dialog.cmb_serial.currentText().split(" - ")[0].strip(),
+                "baud": self.connect_dialog.cmb_baud.currentText(),
+            },
+            1: {
+                "host": self.connect_dialog.edit_ip.text().strip(),
+                "port": self.connect_dialog.edit_port.text().strip(),
+            },
+            2: {
+                "host": self.connect_dialog.edit_udp_host.text().strip() or "0.0.0.0",
+                "port": self.connect_dialog.edit_udp_port.text().strip(),
+            },
+        }.get(mode_index, {})
+
+        plan = self.connection_controller.plan_dialog_submission(mode_index, raw_values)
+        if not plan.get("ok", False):
+            self._pending_manual_success_notice = False
+            self.log_user_action("connection_failed", error=str(plan.get("error", plan.get("message", "连接失败"))))
+            self._show_auto_notice(str(plan.get("title", "连接失败")), str(plan.get("message", "连接失败")))
+            return
+
+        try:
+            self._last_link_label = self.connection_controller.execute_connection_plan(self.connection_manager, self.settings_manager, plan)
+            self._pending_manual_success_notice = True
+            self.log_user_action("connection_requested", **dict(plan.get("log", {}) or {}))
+        except Exception as exc:
+            self._pending_manual_success_notice = False
+            self.log_user_action("connection_failed", error=str(exc))
+            self._show_auto_notice("连接失败", str(exc))
 
     def on_connection_status_clicked(self):
         state = self.connection_manager.state
@@ -1819,9 +1809,10 @@ class DroneGroundStation(QMainWindow):
         workbench.set_action_active("setup.sensors", has_vehicle)
         workbench.set_action_active("setup.power", has_vehicle)
         workbench.set_action_active("setup.firmware", is_connected)
+        transfer_active = bool(getattr(getattr(self, "mission_transfer_controller", None), "active", False) or self._mission_transfer_active)
         workbench.set_action_active("mission.toggle_add", self._map_add_mode)
-        workbench.set_action_active("mission.upload", self._mission_transfer_active and is_connected)
-        workbench.set_action_active("mission.download", self._mission_transfer_active and is_connected)
+        workbench.set_action_active("mission.upload", transfer_active and is_connected)
+        workbench.set_action_active("mission.download", transfer_active and is_connected)
         workbench.set_action_active("map.toggle_measure", bool(getattr(self.map_controller, "measure_mode", False)))
         workbench.set_action_active("map.toggle_follow", bool(getattr(self.map_controller, "follow_aircraft", False)))
         workbench.set_action_active("fly.view", has_vehicle)
@@ -2634,6 +2625,18 @@ class DroneGroundStation(QMainWindow):
     def _validate_upload_waypoints(self, waypoints: list[dict]) -> tuple[bool, str]:
         return self.mission_sync_service.validate_upload_waypoints(waypoints)
 
+    def _apply_transfer_progress_payload(self, progress: dict):
+        item = dict(progress or {})
+        self.waypoint_content.set_transfer_progress(
+            item.get("operation", "upload"),
+            int(item.get("current", 0) or 0),
+            int(item.get("total", 0) or 0),
+            int(item.get("percent", 0) or 0),
+            str(item.get("message", "") or ""),
+            bool(item.get("active", False)),
+        )
+        QApplication.processEvents()
+
     def upload_waypoints_to_vehicle(self, waypoints):
         active_vehicle_id = str((self.vehicle_manager.active_vehicle() or {}).get("vehicle_id", "") or "")
         thread = self._thread_for_vehicle(active_vehicle_id) if active_vehicle_id else self.connection_manager.thread
@@ -2645,20 +2648,22 @@ class DroneGroundStation(QMainWindow):
                 bool(thread),
                 len(waypoints or []),
             )
+            blocked = self.mission_transfer_controller.block_not_connected()
             self.waypoint_content.clear_transfer_progress()
-            self._show_auto_notice("未连接", "请先建立飞控连接")
+            self._show_auto_notice(blocked["title"], blocked["message"])
             return
 
         if self.waypoint_content._home_wp is None:
-            self.waypoint_content.clear_transfer_progress("上传中止")
-            self._show_auto_notice("上传中止", "请先设置H点，H点为飞控0号航点")
+            blocked = self.mission_transfer_controller.block_missing_home()
+            self.waypoint_content.clear_transfer_progress(blocked["status_text"])
+            self._show_auto_notice(blocked["title"], blocked["message"])
             self.log_user_action("mission_upload_blocked", reason="missing_home")
             return
 
         self._mission_transfer_active = True
         self.connection_manager.suppress_watchdog(True)
         try:
-            upload_plan = self.mission_sync_service.prepare_upload(
+            upload_plan = self.mission_transfer_controller.prepare_upload(
                 list(waypoints or []),
                 self.waypoint_content.get_auto_route_items(),
                 self.home_position or getattr(self.waypoint_content, "_home_wp", None),
@@ -2681,12 +2686,17 @@ class DroneGroundStation(QMainWindow):
                 max(0, display_count - len(waypoints or [])),
                 self.connection_manager.state,
             )
-            self.waypoint_content.set_transfer_progress('upload', 0, len(mission_waypoints), 0, f'准备通过 {link_label} 上传航线', True)
-            QApplication.processEvents()
+            self._apply_transfer_progress_payload(
+                self.mission_transfer_controller.begin("upload", link_label, total=len(mission_waypoints))
+            )
+            self._mission_transfer_active = self.mission_transfer_controller.active
             thread.upload_mission(mission_waypoints)
             self._cache_link_context(link_key, include_params=False, include_mission=True)
             self._sync_active_vehicle_context_metrics(include_params=False, include_mission=True)
-            self.waypoint_content.set_transfer_progress('upload', len(mission_waypoints), len(mission_waypoints), 100, f'{link_label} 航线上传完成', False)
+            self._apply_transfer_progress_payload(
+                self.mission_transfer_controller.finish_success("upload", link_label, current=len(mission_waypoints), total=len(mission_waypoints))
+            )
+            self._mission_transfer_active = self.mission_transfer_controller.active
             self.log_user_action(
                 "mission_uploaded",
                 total=len(mission_waypoints),
@@ -2700,11 +2710,13 @@ class DroneGroundStation(QMainWindow):
             )
         except Exception as exc:
             self.app_logger.exception("mission upload failed")
-            self.waypoint_content.clear_transfer_progress("上传失败")
+            failure = self.mission_transfer_controller.finish_failure("upload", str(exc))
+            self._mission_transfer_active = self.mission_transfer_controller.active
+            self.waypoint_content.clear_transfer_progress(failure["status_text"])
             self.log_user_action("mission_upload_failed", error=str(exc))
             self._show_auto_notice("上传失败", str(exc))
         finally:
-            self._mission_transfer_active = False
+            self._mission_transfer_active = self.mission_transfer_controller.active
             self.connection_manager.suppress_watchdog(False)
 
     def download_waypoints_from_vehicle(self):
@@ -2717,16 +2729,17 @@ class DroneGroundStation(QMainWindow):
                 self.connection_manager.state,
                 bool(thread),
             )
+            blocked = self.mission_transfer_controller.block_not_connected()
             self.waypoint_content.clear_transfer_progress()
-            self._show_auto_notice("未连接", "请先建立飞控连接")
+            self._show_auto_notice(blocked["title"], blocked["message"])
             return
 
         self._mission_transfer_active = True
         self.connection_manager.suppress_watchdog(True)
         try:
             self.app_logger.info("mission download start: state=%s link=%s", self.connection_manager.state, link_label)
-            self.waypoint_content.set_transfer_progress('download', 0, 0, 0, f'准备从 {link_label} 下载航线', True)
-            QApplication.processEvents()
+            self._apply_transfer_progress_payload(self.mission_transfer_controller.begin("download", link_label, total=0))
+            self._mission_transfer_active = self.mission_transfer_controller.active
             downloaded = thread.download_mission()
             thread.request_home_position(timeout=2.0)
             self._sync_home_position_from_status()
@@ -2750,7 +2763,10 @@ class DroneGroundStation(QMainWindow):
             self._sync_active_vehicle_context_metrics(include_params=False, include_mission=True)
             total_downloaded = int(download_plan.get("total_downloaded", len(downloaded or [])) or 0)
             visible_count = int(download_plan.get("visible_count", len(waypoints)) or 0)
-            self.waypoint_content.set_transfer_progress('download', total_downloaded, total_downloaded, 100, f'{link_label} 航线下载完成', False)
+            self._apply_transfer_progress_payload(
+                self.mission_transfer_controller.finish_success("download", link_label, current=total_downloaded, total=total_downloaded)
+            )
+            self._mission_transfer_active = self.mission_transfer_controller.active
             self.refresh_map_waypoints(recenter=bool(waypoints))
             self.log_user_action("mission_downloaded", total=total_downloaded, visible=visible_count, home=1 if self.home_position else 0, link=link_label, link_key=link_key)
             self._show_auto_notice(
@@ -2759,27 +2775,19 @@ class DroneGroundStation(QMainWindow):
             )
         except Exception as exc:
             self.app_logger.exception("mission download failed")
-            self.waypoint_content.clear_transfer_progress("下载失败")
+            failure = self.mission_transfer_controller.finish_failure("download", str(exc))
+            self._mission_transfer_active = self.mission_transfer_controller.active
+            self.waypoint_content.clear_transfer_progress(failure["status_text"])
             self.log_user_action("mission_download_failed", error=str(exc))
             self._show_auto_notice("下载失败", str(exc))
         finally:
-            self._mission_transfer_active = False
+            self._mission_transfer_active = self.mission_transfer_controller.active
             self.connection_manager.suppress_watchdog(False)
 
     def on_mission_progress(self, payload):
-        message = str(payload.get('message', '') or '')
-        link_label = str(payload.get('link_label', '') or '')
-        if link_label and link_label not in message:
-            message = f"[{link_label}] {message}"
-        self.waypoint_content.set_transfer_progress(
-            payload.get('operation', 'upload'),
-            int(payload.get('current', 0) or 0),
-            int(payload.get('total', 0) or 0),
-            int(payload.get('percent', 0) or 0),
-            message,
-            bool(payload.get('active', False)),
-        )
-        QApplication.processEvents()
+        progress = self.mission_transfer_controller.format_progress_event(payload)
+        self._mission_transfer_active = self.mission_transfer_controller.active
+        self._apply_transfer_progress_payload(progress)
 
     def on_waypoint_table_changed(self, item):
         if not self.waypoint_content.route_table.hasFocus():

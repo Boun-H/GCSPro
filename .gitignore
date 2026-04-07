@@ -1,0 +1,42 @@
+# ==================== Python 项目通用 ====================
+# 编译后的字节码文件（截图中的 .pyc 文件）
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+# Python 虚拟环境（你的 .venv 目录）
+.venv/
+venv/
+env/
+ENV/
+# 分发/打包文件
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ==================== GCSPro 项目专属 ====================
+# 日志文件（截图中的 .log 文件）
+*.log
+logs/
+# 可能的配置文件（若有本地配置，避免同步）
+*.ini
+*.cfg
+local_config/
+# 二进制文件/缓存
+*.bin
+.cache/
+# IDE 配置文件（VS Code/PyCharm）
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==================== 系统文件 ====================
+# Windows 系统
+Thumbs.db
+Desktop.ini
+# macOS 系统
+.DS_Store
+.AppleDouble
+.LSOverride

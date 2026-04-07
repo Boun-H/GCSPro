@@ -2,9 +2,11 @@ import unittest
 
 from core.analyze_service import AnalyzeService
 from core.command_router import CommandRouter
+from core.connection_controller import ConnectionController
 from core.health_monitor import HealthMonitor
 from core.link_session_service import LinkSessionService
 from core.mission_sync_service import MissionSyncService
+from core.mission_transfer_controller import MissionTransferController
 from core.setup_wizard_service import SetupWizardService
 from core.vehicle_context_service import VehicleContextService
 
@@ -149,6 +151,46 @@ class CoreServiceTests(unittest.TestCase):
         self.assertEqual(upload_summary["display_count"], 1)
         self.assertEqual(download_summary["visible_count"], 1)
         self.assertEqual(download_summary["home_position"]["source"], "mission_wp0")
+
+    def test_connection_controller_plans_dialog_submission(self):
+        controller = ConnectionController()
+
+        serial_plan = controller.plan_dialog_submission(0, {"port": "COM6", "baud": "115200"})
+        udp_plan = controller.plan_dialog_submission(2, {"host": "", "port": "14550"})
+        blocked_plan = controller.plan_dialog_submission(0, {"port": "", "baud": "115200"})
+
+        self.assertTrue(serial_plan["ok"])
+        self.assertEqual(serial_plan["kind"], "serial")
+        self.assertEqual(serial_plan["label"], "串口 COM6@115200")
+        self.assertTrue(udp_plan["ok"])
+        self.assertEqual(udp_plan["payload"]["host"], "0.0.0.0")
+        self.assertFalse(blocked_plan["ok"])
+        self.assertIn("未检测到串口", blocked_plan["title"])
+
+    def test_mission_transfer_controller_manages_progress_state(self):
+        controller = MissionTransferController()
+
+        start = controller.begin("upload", "串口 COM6@115200", total=3)
+        progress = controller.format_progress_event(
+            {
+                "operation": "upload",
+                "current": 1,
+                "total": 3,
+                "percent": 33,
+                "message": "正在发送航点",
+                "link_label": "串口 COM6@115200",
+                "active": True,
+            }
+        )
+        success = controller.finish_success("download", "TCP 127.0.0.1:5760", current=2, total=2)
+        failure = controller.finish_failure("upload")
+
+        self.assertTrue(start["active"])
+        self.assertIn("准备通过 串口 COM6@115200 上传航线", start["message"])
+        self.assertIn("[串口 COM6@115200]", progress["message"])
+        self.assertEqual(success["percent"], 100)
+        self.assertFalse(success["active"])
+        self.assertEqual(failure["status_text"], "上传失败")
 
 
 if __name__ == "__main__":
