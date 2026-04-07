@@ -1,8 +1,13 @@
+import time
 import unittest
+
+from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtWidgets import QApplication
 
 from core.analyze_service import AnalyzeService
 from core.command_router import CommandRouter
 from core.connection_controller import ConnectionController
+from core.connection_manager import ConnectionManager
 from core.health_monitor import HealthMonitor
 from core.link_session_service import LinkSessionService
 from core.mission_sync_service import MissionSyncService
@@ -13,7 +18,27 @@ from core.telemetry_status_controller import TelemetryStatusController
 from core.vehicle_context_service import VehicleContextService
 
 
+class _DummyLinkThread(QObject):
+    status_updated = pyqtSignal(dict)
+    mission_progress = pyqtSignal(dict)
+
+    def __init__(self):
+        super().__init__()
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop_thread(self):
+        self.stopped = True
+
+
 class CoreServiceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt_app = QApplication.instance() or QApplication([])
+
     def test_setup_wizard_service_reports_progress_and_next_step(self):
         report = SetupWizardService.evaluate(
             {
@@ -233,6 +258,24 @@ class CoreServiceTests(unittest.TestCase):
         self.assertEqual(chip_tones["battery"], "danger")
         self.assertIn("高度: 120.5m", labels["altitude"])
         self.assertIn("GPS: 13 颗", labels["gps"])
+
+    def test_connection_manager_connect_returns_without_blocking_ui(self):
+        manager = ConnectionManager()
+        thread = _DummyLinkThread()
+
+        started_at = time.perf_counter()
+        manager._connect(lambda: (time.sleep(0.35), thread)[1])
+        elapsed = time.perf_counter() - started_at
+
+        deadline = time.time() + 1.0
+        while manager.thread is None and time.time() < deadline:
+            self.qt_app.processEvents()
+            time.sleep(0.01)
+
+        self.assertLess(elapsed, 0.2)
+        self.assertIs(manager.thread, thread)
+        self.assertEqual(manager.state, "connected")
+        self.assertTrue(thread.started)
 
 
 if __name__ == "__main__":

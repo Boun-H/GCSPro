@@ -71,3 +71,10 @@
 2026-04-07 10:49:21 - GCS.MapController - INFO - Offline cache ready: source=谷歌卫星 z=5 x=[24,28] y=[11,15] tiles=25
 2026-04-07 10:49:21 - GCS.MapController - INFO - Cache request accepted: source=谷歌卫星 z=5 x=[21,31] y=[11,16]
 2026-04-07 10:49:21 - GCS.MapController - INFO - Offline cache ready: source=谷歌卫星 z=5 x=[21,31] y=[11,16] tiles=66
+2026-04-07 11:24:20 - GCS.MapController - INFO - set_add_mode called: enabled=False, _page_ready=True
+2026-04-07 11:24:20 - GCS.MapController - INFO - Executing JavaScript: window.setAddWaypointMode(false);
+2026-04-07 11:24:20 - GCS.MapController - INFO - Trigger center-based cache: {'map_name': '谷歌卫星', 'zoom': 5, 'x_min': 24, 'x_max': 28, 'y_min': 11, 'y_max': 15}
+2026-04-07 11:24:20 - GCS.MapController - INFO - Cache request accepted: source=谷歌卫星 z=5 x=[24,28] y=[11,15]
+2026-04-07 11:24:20 - GCS.MapController - INFO - Offline cache ready: source=谷歌卫星 z=5 x=[24,28] y=[11,15] tiles=25
+2026-04-07 11:24:20 - GCS.MapController - INFO - Cache request accepted: source=谷歌卫星 z=5 x=[21,31] y=[11,16]
+2026-04-07 11:24:20 - GCS.MapController - INFO - Offline cache ready: source=谷歌卫星 z=5 x=[21,31] y=[11,16] tiles=66

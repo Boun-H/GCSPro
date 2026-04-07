@@ -1645,7 +1645,7 @@ class MavlinkThread(QThread):
             float(alt),
         )
 
-    def request_home_position(self, timeout: float = 2.0):
+    def request_home_position(self, timeout: float = 2.0, wait: bool = True):
         target_system, target_component = self._mission_target()
         self.master.mav.command_long_send(
             target_system,
@@ -1660,6 +1660,8 @@ class MavlinkThread(QThread):
             0,
             0,
         )
+        if not wait:
+            return None
         message = self._wait_for_message({'HOME_POSITION'}, timeout=max(0.5, float(timeout)))
         if message is None:
             return None

@@ -2006,7 +2006,7 @@ class DroneGroundStation(QMainWindow):
                 thread = self.connection_manager.thread
                 if thread is not None:
                     try:
-                        thread.request_home_position(timeout=1.5)
+                        thread.request_home_position(timeout=1.5, wait=False)
                     except Exception:
                         pass
                 if self._pending_manual_success_notice:

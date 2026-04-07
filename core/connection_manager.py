@@ -1,4 +1,5 @@
 from enum import Enum
+import threading
 import time
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
@@ -18,6 +19,7 @@ class ConnectionManager(QObject):
     connection_state_changed = pyqtSignal(str)
     connection_error = pyqtSignal(str)
     mission_progress = pyqtSignal(dict)
+    _connect_worker_finished = pyqtSignal(int, object, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,6 +47,8 @@ class ConnectionManager(QObject):
         self._last_link_type = None
         self._last_serial_port = None
         self._last_serial_baud = None
+        self._connect_attempt_token = 0
+        self._connect_worker_finished.connect(self._finish_connect_attempt)
 
     @property
     def state(self) -> str:
@@ -116,6 +120,7 @@ class ConnectionManager(QObject):
         self._reconnecting = False
         self._reconnect_timer.stop()
         self._watchdog_timer.stop()
+        self._connect_attempt_token += 1
         if self._thread is None:
             self._set_state(ConnectionState.DISCONNECTED)
             return
@@ -158,8 +163,53 @@ class ConnectionManager(QObject):
             self.disconnect(manual=False)
 
         self._set_state(ConnectionState.CONNECTING)
+        self._connect_attempt_token += 1
+        token = self._connect_attempt_token
+
+        def _worker():
+            try:
+                thread = factory()
+                self._connect_worker_finished.emit(token, (allow_reconnect, thread), True)
+            except Exception as exc:
+                self._connect_worker_finished.emit(token, (allow_reconnect, exc), False)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _dispose_pending_thread(self, thread):
+        if thread is None:
+            return
         try:
-            thread = factory()
+            thread.stop_thread()
+            return
+        except Exception:
+            pass
+        try:
+            master = getattr(thread, "master", None)
+            if master is not None:
+                master.close()
+        except Exception:
+            pass
+
+    def _finish_connect_attempt(self, token: int, payload: object, ok: bool):
+        allow_reconnect, result = payload if isinstance(payload, tuple) and len(payload) == 2 else (False, payload)
+        if token != self._connect_attempt_token or self._state != ConnectionState.CONNECTING:
+            if ok:
+                self._dispose_pending_thread(result)
+            return
+
+        if not ok:
+            self._thread = None
+            self._set_state(ConnectionState.DISCONNECTED)
+            self.connection_error.emit(str(result))
+            if allow_reconnect:
+                self._schedule_reconnect()
+            else:
+                self._reconnecting = False
+                self._auto_reconnect_attempts = 0
+            return
+
+        try:
+            thread = result
             thread.status_updated.connect(self._on_thread_status_updated)
             thread.mission_progress.connect(self.mission_progress.emit)
             self._thread = thread
