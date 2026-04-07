@@ -1,0 +1,7 @@
+2026-04-07 07:48:14 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 07:48:14 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 07:48:14 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
+2026-04-07 07:48:23 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "peripherals", "x": 150, "y": 110}}
+2026-04-07 08:06:21 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 08:06:21 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 08:06:21 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}

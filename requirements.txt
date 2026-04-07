@@ -1,0 +1,5 @@
+PyQt6>=6.6.0
+PyQt6-WebEngineWidgets>=6.6.0
+pymavlink>=2.4.20
+folium>=0.16.0
+pyserial>=3.5

@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>无人机任务航线编辑器</title>
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/tokml/0.8.0/tokml.min.js"></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Microsoft Yahei", sans-serif; }
+        body { background: #0f172a; color: #e2e8f0; }
+
+        .container { display: flex; height: 100vh; width: 100vw; }
+        #map { flex: 1; height: 100%; }
+        .panel {
+            width: 420px; background: #1e293b; border-left: 1px solid #334155;
+            display: flex; flex-direction: column; padding: 10px;
+        }
+        .tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+        .tab { padding: 6px 12px; background: #334155; border-radius: 4px; font-size: 14px; cursor: default; }
+        .tab.active { background: #0d9488; color: white; }
+        .table-container { flex: 1; overflow-y: auto; margin-bottom: 15px; border: 1px solid #334155; border-radius: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { border: 1px solid #334155; padding: 8px 6px; text-align: center; }
+        th { background: #334155; color: #e2e8f0; }
+        tr.selected { background: #1e40af; }
+
+        .detail-section { border: 1px solid #334155; border-radius: 4px; padding: 10px; margin-bottom: 15px; }
+        .detail-section h4 { margin-bottom: 10px; color: #94a3b8; }
+        .detail-row { display: flex; align-items: center; margin-bottom: 8px; gap: 8px; }
+        .detail-row label { width: 80px; font-size: 13px; color: #cbd5e1; }
+        .detail-row input[type="number"], .detail-row input[type="text"] {
+            flex: 1; padding: 6px; background: #334155; border: 1px solid #475569; border-radius: 4px; color: white;
+        }
+        .detail-row input[type="checkbox"] { width: auto; }
+        .num-input-group { display: flex; align-items: center; flex: 1; }
+        .num-input-group input { flex: 1; text-align: center; }
+        .num-btn { padding: 6px 8px; background: #475569; border: none; color: white; cursor: pointer; }
+
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn { padding: 10px; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; }
+        .btn.primary { background: #0284c7; color: white; }
+        .btn.danger { background: #dc2626; color: white; }
+        .btn.secondary { background: #334155; color: white; }
+
+        /* ========== 地图图例 ========== */
+        .map-legend {
+            position: absolute; right: 14px; bottom: 14px; z-index: 999;
+            background: rgba(255,255,255,0.94); border: 1px solid #ccc;
+            border-radius: 12px; padding: 10px 12px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.1);
+            font-size: 12px; color: #222;
+        }
+        .map-legend-title { font-weight: bold; margin-bottom: 8px; }
+        .map-legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .legend-dot {
+            width: 16px; height: 16px; border-radius: 50%;
+            border: 2px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,0.25);
+        }
+        .legend-dot.home { background: #0f766e; }
+        .legend-dot.waypoint { background: #007bff; }
+        .legend-plane {
+            display: inline-block; width: 18px; height: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div id="map"></div>
+
+        <!-- 地图图例 -->
+        <div class="map-legend">
+            <div class="map-legend-title">地图图例</div>
+            <div class="map-legend-item">
+                <svg class="legend-plane" viewBox="0 0 64 64">
+                    <path d="M32 6 L38 22 L58 26 L58 34 L38 38 L32 58 L26 38 L6 34 L6 26 L26 22 Z" fill="#0f766e"></path>
+                </svg>
+                <span>飞机位置</span>
+            </div>
+            <div class="map-legend-item">
+                <span class="legend-dot home"></span>
+                <span>Home 点</span>
+            </div>
+            <div class="map-legend-item">
+                <span class="legend-dot waypoint"></span>
+                <span>任务航点</span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">任务航线</div>
+            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 10px;">
+                点击序号查看详情，拖动地图航点会同步更新数据
+            </div>
+            <div class="tabs">
+                <div class="tab">任务点 0</div>
+                <div class="tab">任务航线编辑</div>
+                <div class="tab">未同步</div>
+                <div class="tab active">地图拖拽可编辑</div>
+            </div>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>序号</th><th>动作</th><th>盘旋半径</th><th>盘旋时间</th><th>纬度</th><th>经度</th><th>高度(m)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+
+            <div class="detail-section">
+                <h4>航点详细信息</h4>
+                <div class="detail-row">
+                    <label>序号</label>
+                    <input type="text" id="detailIndex" value="未选中" readonly style="background:#475569">
+                    <input type="checkbox" id="detailOrbit">
+                    <label for="detailOrbit" style="width:auto;">到点盘旋</label>
+                </div>
+                <div class="detail-row">
+                    <label>纬度</label>
+                    <div class="num-input-group">
+                        <input type="number" id="detailLat" step="0.0000001">
+                        <button class="num-btn" onclick="changeNum('detailLat',0.0000001)">▲</button>
+                        <button class="num-btn" onclick="changeNum('detailLat',-0.0000001)">▼</button>
+                    </div>
+                    <label>经度</label>
+                    <div class="num-input-group">
+                        <input type="number" id="detailLng" step="0.0000001">
+                        <button class="num-btn" onclick="changeNum('detailLng',0.0000001)">▲</button>
+                        <button class="num-btn" onclick="changeNum('detailLng',-0.0000001)">▼</button>
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <label>高度(m)</label>
+                    <div class="num-input-group">
+                        <input type="number" id="detailAlt" step="1" value="50">
+                        <button class="num-btn" onclick="changeNum('detailAlt',1)">▲</button>
+                        <button class="num-btn" onclick="changeNum('detailAlt',-1)">▼</button>
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <label>盘旋半径(m)</label>
+                    <div class="num-input-group">
+                        <input type="number" id="detailOrbitRadius" step="1" value="60">
+                        <button class="num-btn" onclick="changeNum('detailOrbitRadius',1)">▲</button>
+                        <button class="num-btn" onclick="changeNum('detailOrbitRadius',-1)">▼</button>
+                    </div>
+                    <label>盘旋时间(min)</label>
+                    <div class="num-input-group">
+                        <input type="number" id="detailOrbitTime" step="1" value="30">
+                        <button class="num-btn" onclick="changeNum('detailOrbitTime',1)">▲</button>
+                        <button class="num-btn" onclick="changeNum('detailOrbitTime',-1)">▼</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="btn-grid">
+                <button class="btn primary" onclick="addWaypointByMap()">地图点选航点</button>
+                <button class="btn danger" onclick="deleteSelectedWaypoint()">删除选中</button>
+                <button class="btn secondary" onclick="clearAllWaypoints()">清空航点</button>
+                <button class="btn primary" onclick="setUniformAltitude()">统一高度</button>
+                <button class="btn secondary" onclick="exportKML()">导出 KML</button>
+                <button class="btn secondary" onclick="importKML()">导入 KML</button>
+                <button class="btn secondary" onclick="exportJSON()">导出 JSON</button>
+                <button class="btn secondary" onclick="importJSON()">导入 JSON</button>
+                <button class="btn primary" style="grid-column:span2">上传航线</button>
+                <button class="btn primary" style="grid-column:span2">下载航线</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const leafletReady = !!(window.L && typeof window.L.map === 'function');
+        const map = leafletReady ? L.map('map').setView([39.9042, 116.4074], 15) : {
+            on: function() {},
+            off: function() {},
+            removeLayer: function() {},
+            addLayer: function() {},
+            getContainer: function() { return document.getElementById('map'); },
+        };
+
+        let waypoints = [];
+        let markers = [];
+        let polyline;
+        let selectedIndex = -1;
+        let isAddingWaypoints = false;
+        let addWaypointListener = null;
+        let mapBridge = null;
+        let addWaypointMode = false;
+        let homeMarker = null;
+        let vehicleMarker = null;
+        let currentTileLayer = null;
+        let currentMapSource = '谷歌卫星';
+        let mapSources = {
+            '谷歌卫星': {
+                tiles: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                attr: 'Google',
+                maxZoom: 21,
+            },
+            'ArcGIS卫星': {
+                tiles: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr: 'Esri',
+                maxZoom: 21,
+            }
+        };
+
+        function applyMapSource(mapName) {
+            if (!leafletReady) return;
+            const source = mapSources[mapName];
+            if (!source || !source.tiles) {
+                console.warn('Unknown map source:', mapName);
+                return;
+            }
+            currentMapSource = mapName;
+            if (currentTileLayer) {
+                map.removeLayer(currentTileLayer);
+            }
+            currentTileLayer = L.tileLayer(source.tiles, {
+                attribution: source.attr || '',
+                maxZoom: Number(source.maxZoom || 21),
+            }).addTo(map);
+        }
+
+        if (leafletReady) {
+            applyMapSource(currentMapSource);
+        } else {
+            const mapEl = document.getElementById('map');
+            mapEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#cbd5e1;background:#0b1220;">地图资源加载失败（网络不可用），已显示网页面板</div>';
+        }
+
+        function bindBridge() {
+            if (!window.qt || !window.qt.webChannelTransport || typeof QWebChannel === 'undefined') {
+                window.setTimeout(bindBridge, 120);
+                return;
+            }
+            new QWebChannel(window.qt.webChannelTransport, function(channel) {
+                mapBridge = channel.objects.mapBridge;
+                console.log('WebChannel connected:', !!mapBridge);
+            });
+        }
+        bindBridge();
+
+        map.on('click', function(e) {
+            if (!leafletReady || !addWaypointMode) {
+                return;
+            }
+            if (mapBridge && typeof mapBridge.addWaypoint === 'function') {
+                mapBridge.addWaypoint(Number(e.latlng.lat), Number(e.latlng.lng));
+            }
+        });
+
+        // 更新表格
+        function updateTable() {
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+            waypoints.forEach((wp, idx) => {
+                const tr = document.createElement('tr');
+                tr.className = idx === selectedIndex ? 'selected' : '';
+                tr.innerHTML = `
+                    <td onclick="selectWaypoint(${idx})" style="cursor:pointer">${idx+1}</td>
+                    <td>${wp.orbit?'到点盘旋':'航点'}</td>
+                    <td>${wp.orbitRadius}m</td>
+                    <td>${wp.orbitTime}min</td>
+                    <td>${wp.lat.toFixed(7)}</td>
+                    <td>${wp.lng.toFixed(7)}</td>
+                    <td>${wp.alt}m</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // 更新航线
+        function updatePath() {
+            if (!leafletReady) return;
+            if (polyline) map.removeLayer(polyline);
+            if (waypoints.length < 2) return;
+            const latlngs = waypoints.map(p => [p.lat, p.lng]);
+            polyline = L.polyline(latlngs, { color: '#0284c7', weight: 3 }).addTo(map);
+        }
+
+        // 选择航点
+        function selectWaypoint(idx) {
+            selectedIndex = idx;
+            const wp = waypoints[idx];
+            document.getElementById('detailIndex').value = idx+1;
+            document.getElementById('detailLat').value = wp.lat.toFixed(7);
+            document.getElementById('detailLng').value = wp.lng.toFixed(7);
+            document.getElementById('detailAlt').value = wp.alt;
+            document.getElementById('detailOrbit').checked = wp.orbit;
+            document.getElementById('detailOrbitRadius').value = wp.orbitRadius;
+            document.getElementById('detailOrbitTime').value = wp.orbitTime;
+            updateTable();
+        }
+
+        // 数字增减
+        function changeNum(id, delta) {
+            const input = document.getElementById(id);
+            let val = parseFloat(input.value) || 0;
+            val += delta;
+            input.value = val.toFixed(7);
+            if (selectedIndex !== -1) {
+                const wp = waypoints[selectedIndex];
+                if (id === 'detailLat') wp.lat = val;
+                if (id === 'detailLng') wp.lng = val;
+                if (id === 'detailAlt') wp.alt = val;
+                if (id === 'detailOrbitRadius') wp.orbitRadius = val;
+                if (id === 'detailOrbitTime') wp.orbitTime = val;
+                markers[selectedIndex].setLatLng([wp.lat, wp.lng]);
+                updateTable(); updatePath();
+            }
+        }
+
+        // 持续添加航点（你要的功能）
+        function addWaypointByMap() {
+            if (!leafletReady) {
+                alert('当前网络不可用，地图功能暂不可用');
+                return;
+            }
+            if (isAddingWaypoints) {
+                isAddingWaypoints = false;
+                map.off('click', addWaypointListener);
+                document.querySelector('.btn.primary[onclick="addWaypointByMap()"]').innerText = '地图点选航点';
+                alert('已停止添加');
+                return;
+            }
+
+            isAddingWaypoints = true;
+            document.querySelector('.btn.primary[onclick="addWaypointByMap()"]').innerText = '停止添加航点';
+            alert('点击地图持续添加航点！');
+
+            addWaypointListener = function(e) {
+                const lat = e.latlng.lat;
+                const lng = e.latlng.lng;
+                const wp = {
+                    lat, lng, alt:50, orbit:false, orbitRadius:60, orbitTime:30
+                };
+                waypoints.push(wp);
+                const marker = L.marker([lat,lng],{draggable:true}).addTo(map);
+                marker.bindTooltip(`航点${waypoints.length}`,{permanent:true,direction:'top'});
+                marker.on('dragend',()=>{
+                    const p = marker.getLatLng();
+                    const i = markers.indexOf(marker);
+                    waypoints[i].lat = p.lat;
+                    waypoints[i].lng = p.lng;
+                    updateTable(); updatePath();
+                });
+                markers.push(marker);
+                updateTable(); updatePath();
+            };
+            map.on('click', addWaypointListener);
+        }
+
+        // 删除选中
+        function deleteSelectedWaypoint() {
+            if (selectedIndex === -1) return alert('请选航点');
+            waypoints.splice(selectedIndex,1);
+            map.removeLayer(markers[selectedIndex]);
+            markers.splice(selectedIndex,1);
+            selectedIndex = -1;
+            updateTable(); updatePath();
+        }
+
+        // 清空
+        function clearAllWaypoints() {
+            if(!confirm('确定清空？'))return;
+            waypoints=[]; markers.forEach(m=>map.removeLayer(m)); markers=[];
+            if(polyline)map.removeLayer(polyline); selectedIndex=-1;
+            document.getElementById('detailIndex').value='未选中';
+            updateTable();
+        }
+
+        // 统一高度
+        function setUniformAltitude() {
+            const alt = prompt('统一高度（米）','50');
+            if(!alt)return;
+            const num=parseInt(alt);
+            if(isNaN(num))return alert('请输入数字');
+            waypoints.forEach(w=>w.alt=num);
+            updateTable();
+        }
+
+        // 导出KML
+        function exportKML() {
+            const data = tokml({
+                type:"FeatureCollection",
+                features:waypoints.map((w,i)=>({
+                    type:"Feature",properties:{name:`航点${i+1}`},
+                    geometry:{type:"Point",coordinates:[w.lng,w.lat,w.alt]}
+                }))
+            });
+            const blob = new Blob([data],{type:'application/vnd.google-earth.kml+xml'});
+            const a = document.createElement('a');
+            a.href=URL.createObjectURL(blob);
+            a.download='航线.kml';
+            a.click();
+        }
+
+        // 导入KML（简化）
+        function importKML() {
+            const i=document.createElement('input');
+            i.type='file'; i.accept='.kml';
+            i.onchange=()=>alert('KML导入触发');
+            i.click();
+        }
+
+        // 导出JSON
+        function exportJSON() {
+            const blob=new Blob([JSON.stringify(waypoints,null,2)],{type:'application/json'});
+            const a=document.createElement('a');
+            a.href=URL.createObjectURL(blob);
+            a.download='航线.json';
+            a.click();
+        }
+
+        // 导入JSON
+        function importJSON() {
+            const i=document.createElement('input');
+            i.type='file'; i.accept='.json';
+            i.onchange=e=>{
+                const f=e.target.files[0];
+                const r=new FileReader();
+                r.onload=()=>{
+                    const d=JSON.parse(r.result);
+                    clearAllWaypoints();
+                    d.forEach(w=>{
+                        waypoints.push(w);
+                        const m=L.marker([w.lat,w.lng],{draggable:true}).addTo(map);
+                        m.bindTooltip(`航点${waypoints.length}`,{permanent:true});
+                        m.on('dragend',()=>{
+                            const p=m.getLatLng();
+                            const i=markers.indexOf(m);
+                            waypoints[i].lat=p.lat; waypoints[i].lng=p.lng;
+                            updateTable(); updatePath();
+                        });
+                        markers.push(m);
+                    });
+                    updateTable(); updatePath();
+                };
+                r.readAsText(f);
+            };
+            i.click();
+        }
+
+        // ===== 与主程序MapController兼容接口 =====
+        window.setAddWaypointMode = function(enabled) {
+            addWaypointMode = Boolean(enabled);
+            const container = map.getContainer ? map.getContainer() : null;
+            if (container) {
+                container.style.cursor = addWaypointMode ? 'crosshair' : '';
+            }
+        };
+
+        window.setMapSource = function(mapName) {
+            applyMapSource(String(mapName || ''));
+        };
+
+        window.setMapSources = function(sources, activeName) {
+            if (!sources || typeof sources !== 'object') {
+                return;
+            }
+            mapSources = sources;
+            const nextName = String(activeName || currentMapSource || '');
+            if (nextName) {
+                applyMapSource(nextName);
+            }
+        };
+
+        window.updateWaypoints = function(newWaypoints) {
+            waypoints = Array.isArray(newWaypoints) ? newWaypoints.map(w => ({
+                lat: Number(w.lat),
+                lng: Number(w.lon),
+                alt: Number(w.alt || 50),
+                orbit: Boolean(w.loiter),
+                orbitRadius: Number(w.loiter_radius || 60),
+                orbitTime: Number(w.loiter_time || 30),
+                type: String(w.type || 'WAYPOINT')
+            })) : [];
+
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            if (polyline) {
+                map.removeLayer(polyline);
+                polyline = null;
+            }
+
+            if (!leafletReady) {
+                updateTable();
+                return;
+            }
+
+            waypoints.forEach((wp, index) => {
+                const marker = L.marker([wp.lat, wp.lng], { draggable: true }).addTo(map);
+                marker.bindTooltip(`航点${index + 1}`, { permanent: true, direction: 'top' });
+                marker.on('click', () => {
+                    selectedIndex = index;
+                    if (mapBridge && typeof mapBridge.selectWaypointAny === 'function') {
+                        mapBridge.selectWaypointAny(index);
+                    } else if (mapBridge && typeof mapBridge.selectWaypoint === 'function') {
+                        mapBridge.selectWaypoint(Number(index));
+                    }
+                    updateTable();
+                });
+                marker.on('drag', () => {
+                    const p = marker.getLatLng();
+                    waypoints[index].lat = p.lat;
+                    waypoints[index].lng = p.lng;
+                    if (mapBridge && typeof mapBridge.moveWaypointRealtimeAny === 'function') {
+                        mapBridge.moveWaypointRealtimeAny(index, p.lat, p.lng);
+                    }
+                    updateTable();
+                    updatePath();
+                });
+                marker.on('dragend', () => {
+                    const p = marker.getLatLng();
+                    if (mapBridge && typeof mapBridge.moveWaypointAny === 'function') {
+                        mapBridge.moveWaypointAny(index, p.lat, p.lng);
+                    } else if (mapBridge && typeof mapBridge.moveWaypoint === 'function') {
+                        mapBridge.moveWaypoint(Number(index), Number(p.lat), Number(p.lng));
+                    }
+                });
+                markers.push(marker);
+            });
+
+            updateTable();
+            updatePath();
+        };
+
+        window.setHomePosition = function(home) {
+            if (!home || !Number.isFinite(Number(home.lat)) || !Number.isFinite(Number(home.lon))) {
+                if (homeMarker) {
+                    map.removeLayer(homeMarker);
+                    homeMarker = null;
+                }
+                return;
+            }
+            const icon = L.divIcon({
+                className: '',
+                html: '<div style="width:28px;height:28px;border-radius:50%;background:#0f766e;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;border:2px solid #fff;">H</div>',
+                iconSize: [28, 28],
+                iconAnchor: [14, 14],
+            });
+            const latLng = [Number(home.lat), Number(home.lon)];
+            if (!homeMarker) {
+                homeMarker = L.marker(latLng, { icon, interactive: false }).addTo(map);
+            } else {
+                homeMarker.setLatLng(latLng);
+            }
+        };
+
+        window.setVehiclePosition = function(vehicle) {
+            if (!vehicle || !Number.isFinite(Number(vehicle.lat)) || !Number.isFinite(Number(vehicle.lon))) {
+                return;
+            }
+            const latLng = [Number(vehicle.lat), Number(vehicle.lon)];
+            const icon = L.divIcon({
+                className: '',
+                html: '<div style="width:18px;height:18px;border-radius:50%;background:#ef4444;border:2px solid #fff;box-shadow:0 0 0 2px rgba(239,68,68,0.2);"></div>',
+                iconSize: [18, 18],
+                iconAnchor: [9, 9],
+            });
+            if (!vehicleMarker) {
+                vehicleMarker = L.marker(latLng, { icon, interactive: false }).addTo(map);
+            } else {
+                vehicleMarker.setLatLng(latLng);
+                vehicleMarker.setIcon(icon);
+            }
+        };
+
+        window.clearVehiclePosition = function() {
+            if (vehicleMarker) {
+                map.removeLayer(vehicleMarker);
+                vehicleMarker = null;
+            }
+        };
+
+        updateTable();
+    </script>
+</body>
+</html>
