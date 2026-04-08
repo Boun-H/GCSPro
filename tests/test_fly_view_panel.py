@@ -62,6 +62,24 @@ class FlyViewPanelTests(unittest.TestCase):
         self.assertIn("QRTL", panel.action_suggestions.text())
         self.assertIn("GPS", panel.action_suggestions.text())
 
+    def test_panel_hides_secondary_controls_until_connected(self):
+        panel = FlyViewPanel()
+        panel.show()
+        self.app.processEvents()
+
+        panel.set_connection_state("未连接")
+        self.app.processEvents()
+        self.assertFalse(panel.media_widget.isVisible())
+        self.assertFalse(panel.btn_toggle_json.isVisible())
+
+        panel.set_connection_state("已连接")
+        panel.set_status_payload({"mode": "AUTO", "battery_remaining": 76, "gps": 12, "alt": 32.0, "vel": 9.1})
+        self.app.processEvents()
+
+        self.assertTrue(panel.media_widget.isVisible())
+        self.assertTrue(panel.btn_toggle_json.isVisible())
+        self.assertTrue(panel.btn_rtl.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()

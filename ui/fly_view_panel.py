@@ -20,7 +20,17 @@ from PyQt6.QtWidgets import (
 
 from core.health_monitor import HealthMonitor
 
-from .panel_style import apply_tone, build_panel_stylesheet, recent_time_text, style_action_button, style_close_button
+from .panel_style import (
+    apply_banner_tone,
+    apply_tone,
+    build_panel_stylesheet,
+    recent_time_text,
+    style_action_button,
+    style_close_button,
+    style_panel_subtitle,
+    style_panel_title,
+    style_timestamp_badge,
+)
 
 
 class FlyViewPanel(QFrame):
@@ -50,19 +60,16 @@ class FlyViewPanel(QFrame):
         title_col = QVBoxLayout()
         title_col.setSpacing(1)
         title = QLabel("Fly View")
-        title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
-        subtitle = QLabel("工具条 / Guided / 任务状态 / 视频 / 相机 / 飞行保护")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("font-size:11px; color:#8fa4bf;")
+        style_panel_title(title, 16)
+        subtitle = QLabel("飞行状态 / 任务控制 / 视频 / 相机 / 保护")
+        style_panel_subtitle(subtitle, 11)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_layout.addLayout(title_col)
         header_layout.addStretch()
         self.updated_at = QLabel("最近更新: --:--:--")
         self.updated_at.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.updated_at.setMinimumWidth(108)
-        self.updated_at.setFixedHeight(24)
-        apply_tone(self.updated_at, "neutral", padding=2, radius=6, font_size=10)
+        style_timestamp_badge(self.updated_at)
         header_layout.addWidget(self.updated_at, 0, Qt.AlignmentFlag.AlignVCenter)
         self.close_btn = QPushButton("×")
         style_close_button(self.close_btn)
@@ -81,8 +88,16 @@ class FlyViewPanel(QFrame):
 
         self.status_summary = QLabel("载具: -- | 模式: UNKNOWN | 任务状态: 就绪")
         self.status_summary.setWordWrap(True)
-        apply_tone(self.status_summary, "info", padding=6, radius=8, font_size=11)
+        apply_banner_tone(self.status_summary, "info")
         body.addWidget(self.status_summary)
+
+        top_split = QHBoxLayout()
+        top_split.setSpacing(10)
+
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
 
         metrics = QWidget()
         metrics_layout = QGridLayout(metrics)
@@ -98,7 +113,7 @@ class FlyViewPanel(QFrame):
             metrics_layout.addWidget(label, idx // 2, idx % 2)
         metrics_layout.setColumnStretch(0, 1)
         metrics_layout.setColumnStretch(1, 1)
-        body.addWidget(metrics)
+        left_layout.addWidget(metrics)
         self._set_default_cards()
 
         self.connection_status = QLabel("连接状态: 未连接")
@@ -106,12 +121,9 @@ class FlyViewPanel(QFrame):
         self.camera_status = QLabel("相机状态: 待机")
         self.alert_status = QLabel("飞行告警: 正常")
         self.alert_status.setWordWrap(True)
-        self.action_suggestions = QLabel("动作建议: 继续监控遥测与任务进度")
-        self.action_suggestions.setWordWrap(True)
-        apply_tone(self.action_suggestions, "neutral", padding=8, radius=8)
         for label in [self.connection_status, self.mission_status, self.camera_status, self.alert_status]:
             label.setWordWrap(True)
-            apply_tone(label, "neutral", padding=6, radius=8)
+            apply_banner_tone(label, "neutral")
 
         status_grid = QGridLayout()
         status_grid.setHorizontalSpacing(8)
@@ -122,13 +134,18 @@ class FlyViewPanel(QFrame):
         status_grid.addWidget(self.alert_status, 1, 1)
         status_grid.setColumnStretch(0, 1)
         status_grid.setColumnStretch(1, 1)
-        body.addLayout(status_grid)
-        body.addWidget(self.action_suggestions)
+        left_layout.addLayout(status_grid)
+        top_split.addWidget(left_column, 3)
 
-        self.quick_actions_summary = QLabel("快捷操作: Guided Hold / QRTL / 打开视频 / 相机控制")
+        right_column = QWidget()
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        self.quick_actions_summary = QLabel("核心操作: 导航 / 返航 / 视频 / 相机")
         self.quick_actions_summary.setWordWrap(True)
-        apply_tone(self.quick_actions_summary, "neutral", padding=5, radius=8, font_size=11)
-        body.addWidget(self.quick_actions_summary)
+        apply_banner_tone(self.quick_actions_summary, "neutral")
+        right_layout.addWidget(self.quick_actions_summary)
 
         toolbar = QGridLayout()
         toolbar.setHorizontalSpacing(8)
@@ -145,9 +162,11 @@ class FlyViewPanel(QFrame):
         toolbar.addWidget(self.btn_rtl, 2, 0, 1, 2)
         toolbar.setColumnStretch(0, 1)
         toolbar.setColumnStretch(1, 1)
-        body.addLayout(toolbar)
+        right_layout.addLayout(toolbar)
 
-        media_grid = QGridLayout()
+        self.media_widget = QWidget()
+        media_grid = QGridLayout(self.media_widget)
+        media_grid.setContentsMargins(0, 0, 0, 0)
         media_grid.setHorizontalSpacing(8)
         media_grid.setVerticalSpacing(8)
         self.video_url_edit = QLineEdit()
@@ -168,7 +187,15 @@ class FlyViewPanel(QFrame):
         media_grid.addWidget(self.btn_center_gimbal, 1, 3)
         for column in range(4):
             media_grid.setColumnStretch(column, 1)
-        body.addLayout(media_grid)
+        right_layout.addWidget(self.media_widget)
+        top_split.addWidget(right_column, 2)
+
+        body.addLayout(top_split)
+
+        self.action_suggestions = QLabel("动作建议: 继续监控遥测与任务进度")
+        self.action_suggestions.setWordWrap(True)
+        apply_banner_tone(self.action_suggestions, "neutral")
+        body.addWidget(self.action_suggestions)
 
         self.btn_toggle_json = QPushButton("展开遥测 JSON")
         style_action_button(self.btn_toggle_json, "info", compact=True)
@@ -213,6 +240,7 @@ class FlyViewPanel(QFrame):
             style_action_button(button, tone, compact=True)
             button.setMinimumHeight(max(button.minimumHeight(), 34))
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._refresh_interaction_state()
 
     def _apply_card_style(self, label: QLabel, tone: str = "neutral"):
         apply_tone(label, tone, padding=8, radius=8)
@@ -241,6 +269,20 @@ class FlyViewPanel(QFrame):
         self.telemetry_json.setVisible(visible)
         self.btn_toggle_json.setText("收起遥测 JSON" if visible else "展开遥测 JSON")
 
+    def _refresh_interaction_state(self):
+        is_connected = self._last_connection_state not in {"未连接", "disconnected"}
+        show_secondary = is_connected
+        self.media_widget.setVisible(show_secondary)
+        self.btn_toggle_json.setVisible(show_secondary)
+        if not show_secondary:
+            self.telemetry_json.hide()
+            self.btn_toggle_json.setText("展开遥测 JSON")
+        self.quick_actions_summary.setText(
+            "核心操作: 导航 / 返航 / 视频 / 相机" if is_connected else "核心操作: 连接后解锁视频 / 相机 / 遥测详情"
+        )
+        for button in [self.btn_hold, self.btn_resume, self.btn_takeoff, self.btn_land, self.btn_rtl]:
+            button.setEnabled(is_connected)
+
     def _refresh_alert_guidance(self):
         report = HealthMonitor.evaluate(
             self._last_payload,
@@ -250,11 +292,16 @@ class FlyViewPanel(QFrame):
         self.alert_status.setText(str(report.get("alert_text", "飞行告警: 正常")))
         self.action_suggestions.setText(str(report.get("action_text", "动作建议: 继续监控遥测与任务进度")))
         connection_tone = "ok" if "已连接" in self._last_connection_state else "warn" if "连接" in self._last_connection_state else "danger"
-        apply_tone(self.connection_status, connection_tone, padding=6, radius=8)
-        apply_tone(self.mission_status, "info", padding=6, radius=8)
-        apply_tone(self.camera_status, "neutral", padding=6, radius=8)
-        apply_tone(self.alert_status, str(report.get("suggestion_tone", "ok")), padding=6, radius=8)
-        apply_tone(self.action_suggestions, str(report.get("suggestion_tone", "ok")), padding=8, radius=8)
+        suggestion_tone = str(report.get("suggestion_tone", "ok"))
+        apply_banner_tone(self.connection_status, connection_tone)
+        apply_banner_tone(self.mission_status, "info")
+        apply_banner_tone(self.camera_status, "neutral")
+        apply_banner_tone(self.alert_status, suggestion_tone)
+        apply_banner_tone(self.action_suggestions, suggestion_tone)
+        style_action_button(self.btn_rtl, "danger" if suggestion_tone == "danger" else "warn" if suggestion_tone == "warn" else "danger", compact=True)
+        self.btn_rtl.setText("⚠ QRTL" if suggestion_tone == "danger" else "QRTL")
+        self.btn_rtl.setMinimumHeight(max(self.btn_rtl.minimumHeight(), 34))
+        self._refresh_interaction_state()
 
     def set_video_url(self, url: str):
         self._video_url = str(url or "")
@@ -268,6 +315,7 @@ class FlyViewPanel(QFrame):
     def set_connection_state(self, text: str):
         self._last_connection_state = str(text or "未连接")
         self.connection_status.setText(f"连接状态: {self._last_connection_state}")
+        self._refresh_interaction_state()
         self._refresh_alert_guidance()
 
     def set_mission_status(self, text: str):

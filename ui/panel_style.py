@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QDateTime
-from PyQt6.QtWidgets import QPushButton, QWidget
+from PyQt6.QtWidgets import QLabel, QPushButton, QWidget
 
 STATUS_TONES = {
     "neutral": ("#142133", "#29425c", "#d9e6f8"),
@@ -16,7 +16,8 @@ def build_panel_stylesheet(include_checks: bool = False) -> str:
     parts = [
         "QFrame { background:#121d2d; border:1px solid #2a4362; border-radius:10px; }",
         "QLabel { color:#d9e6f8; }",
-        "QPushButton { min-height:30px; background:#1e3a5a; color:#d9e6f8; border:1px solid #35506b; border-radius:8px; padding:6px 12px; }",
+        "QScrollArea { background:transparent; border:none; }",
+        "QPushButton { min-height:32px; background:#1e3a5a; color:#d9e6f8; border:1px solid #35506b; border-radius:8px; padding:6px 12px; }",
         "QPushButton:hover { background:#264b73; }",
         "QPushButton[active='true'] { background:#1f6fb2; border:1px solid #58a6ff; color:#ffffff; }",
         "QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QListWidget { background:#0f1926; color:#d9e6f8; border:1px solid #27415f; border-radius:7px; padding:5px 8px; }",
@@ -45,6 +46,26 @@ def apply_tone(widget: QWidget, tone: str = "neutral", padding: int = 8, radius:
     )
 
 
+def style_panel_title(label: QLabel, size: int = 16):
+    label.setStyleSheet(f"font-size:{int(size)}px; font-weight:700; color:#eef5ff;")
+
+
+def style_panel_subtitle(label: QLabel, size: int = 11):
+    label.setWordWrap(True)
+    label.setStyleSheet(f"font-size:{int(size)}px; color:#8fa4bf;")
+
+
+def style_timestamp_badge(label: QLabel):
+    label.setAlignment(label.alignment())
+    label.setMinimumWidth(108)
+    label.setFixedHeight(24)
+    apply_tone(label, "neutral", padding=2, radius=6, font_size=10)
+
+
+def apply_banner_tone(widget: QWidget, tone: str = "neutral"):
+    apply_tone(widget, tone, padding=6, radius=8, font_size=11)
+
+
 def style_close_button(button: QPushButton):
     button.setFixedSize(24, 24)
     button.setStyleSheet(
@@ -55,7 +76,7 @@ def style_close_button(button: QPushButton):
 
 def style_action_button(button: QPushButton, tone: str = "info", compact: bool = False):
     background, border, foreground = STATUS_TONES.get(tone, STATUS_TONES["info"])
-    min_height = 28 if compact else 30
+    min_height = 30 if compact else 34
     button.setStyleSheet(
         "QPushButton {"
         f"min-height:{min_height}px;"

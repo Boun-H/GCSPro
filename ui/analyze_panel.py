@@ -24,7 +24,17 @@ from PyQt6.QtWidgets import (
 
 from core.analyze_service import AnalyzeService
 
-from .panel_style import apply_tone, build_panel_stylesheet, recent_time_text, style_action_button, style_close_button
+from .panel_style import (
+    apply_banner_tone,
+    apply_tone,
+    build_panel_stylesheet,
+    recent_time_text,
+    style_action_button,
+    style_close_button,
+    style_panel_subtitle,
+    style_panel_title,
+    style_timestamp_badge,
+)
 
 
 class TimeSeriesChartWidget(QWidget):
@@ -139,16 +149,16 @@ class AnalyzePanel(QFrame):
         header_layout.setContentsMargins(10, 10, 10, 6)
         title_col = QVBoxLayout()
         title = QLabel("Analyze")
-        title.setStyleSheet("font-size:18px; font-weight:700; color:#eef5ff;")
+        style_panel_title(title, 16)
         subtitle = QLabel("MAVLink Inspector / 日志下载 / 回放 / 图表 / CSV")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
+        style_panel_subtitle(subtitle, 11)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_layout.addLayout(title_col)
         header_layout.addStretch()
         self.updated_at = QLabel("最近更新: --:--:--")
-        self.updated_at.setStyleSheet("font-size:12px; color:#9fb4cf;")
+        self.updated_at.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        style_timestamp_badge(self.updated_at)
         header_layout.addWidget(self.updated_at)
         self.close_btn = QPushButton("×")
         style_close_button(self.close_btn)
@@ -157,12 +167,12 @@ class AnalyzePanel(QFrame):
 
         self.summary_banner = QLabel("分析概览: 等待遥测 / 日志数据")
         self.summary_banner.setWordWrap(True)
-        apply_tone(self.summary_banner, "info", padding=8, radius=8)
+        apply_banner_tone(self.summary_banner, "info")
         main_layout.addWidget(self.summary_banner)
 
-        self.quick_actions_summary = QLabel("快捷操作: 刷新日志 / 下载日志 / 回放 / CSV 导出 / 自动飞行报告")
+        self.quick_actions_summary = QLabel("快捷入口: 日志 / 回放 / CSV / 报告")
         self.quick_actions_summary.setWordWrap(True)
-        apply_tone(self.quick_actions_summary, "neutral", padding=7, radius=8)
+        apply_banner_tone(self.quick_actions_summary, "neutral")
         main_layout.addWidget(self.quick_actions_summary)
 
         self.tabs = QTabWidget()

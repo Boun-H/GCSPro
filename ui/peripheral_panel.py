@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -16,7 +16,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .panel_style import apply_tone, build_panel_stylesheet, recent_time_text, style_action_button, style_close_button
+from .panel_style import (
+    apply_banner_tone,
+    build_panel_stylesheet,
+    recent_time_text,
+    style_action_button,
+    style_close_button,
+    style_panel_subtitle,
+    style_panel_title,
+    style_timestamp_badge,
+)
 
 
 class PeripheralPanel(QFrame):
@@ -38,16 +47,16 @@ class PeripheralPanel(QFrame):
         header_layout.setContentsMargins(10, 10, 10, 6)
         title_col = QVBoxLayout()
         title = QLabel("外围能力")
-        title.setStyleSheet("font-size:18px; font-weight:700; color:#eef5ff;")
+        style_panel_title(title, 16)
         subtitle = QLabel("Joystick / ADS-B / RTK / Firmware Upgrade / 插件扩展")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
+        style_panel_subtitle(subtitle, 11)
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_layout.addLayout(title_col)
         header_layout.addStretch()
         self.updated_at = QLabel("最近更新: --:--:--")
-        self.updated_at.setStyleSheet("font-size:12px; color:#9fb4cf;")
+        self.updated_at.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        style_timestamp_badge(self.updated_at)
         header_layout.addWidget(self.updated_at)
         self.close_btn = QPushButton("×")
         style_close_button(self.close_btn)
@@ -56,12 +65,12 @@ class PeripheralPanel(QFrame):
 
         self.summary_banner = QLabel("外围摘要: Joystick 关 | ADS-B 关 | 视频流未配置 | RTK 127.0.0.1:2101")
         self.summary_banner.setWordWrap(True)
-        apply_tone(self.summary_banner, "info", padding=8, radius=8)
+        apply_banner_tone(self.summary_banner, "info")
         main_layout.addWidget(self.summary_banner)
 
-        self.quick_actions_summary = QLabel("快捷操作: 保存配置 / RTK 注入 / Firmware Upgrade")
+        self.quick_actions_summary = QLabel("快捷入口: 保存 / RTK / 升级")
         self.quick_actions_summary.setWordWrap(True)
-        apply_tone(self.quick_actions_summary, "neutral", padding=7, radius=8)
+        apply_banner_tone(self.quick_actions_summary, "neutral")
         main_layout.addWidget(self.quick_actions_summary)
 
         quick_row = QHBoxLayout()
