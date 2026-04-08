@@ -103,3 +103,18 @@
 2026-04-07 11:24:02 - GCS.Mavlink - INFO - mission trace recv MISSION_ITEM MISSION_ITEM: {'seq': 1, 'mission_type': 0, 'frame': 3, 'command': 16, 'current': 0, 'autocontinue': 1, 'x': 24.201, 'y': 54.701, 'z': 51.0, 'param1': 0.0, 'param2': 0.0, 'param3': 0.0, 'param4': 0.0}
 2026-04-07 11:24:02 - GCS.Mavlink - INFO - mission trace send ack MISSION_ACK: {'target_system': 1, 'target_component': 1, 'type': 0, 'mission_type': 0}
 2026-04-07 11:24:02 - GCS.Mavlink - INFO - mission_download_heights: [{'seq': 1, 'type': 'WAYPOINT', 'frame': 3, 'frame_label': 'GLOBAL_REL', 'raw_alt': 50.0, 'loaded_alt': 50.0, 'home_alt_abs': 0.0}, {'seq': 2, 'type': 'WAYPOINT', 'frame': 3, 'frame_label': 'GLOBAL_REL', 'raw_alt': 51.0, 'loaded_alt': 51.0, 'home_alt_abs': 0.0}]
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace send download_begin MISSION_REQUEST_LIST: {'target_system': 1, 'target_component': 1, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace wait MISSION_COUNT: expecting=['MISSION_ACK', 'MISSION_COUNT'] timeout=1.50s
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace recv MISSION_COUNT MISSION_COUNT: {'count': 2, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace send download_request MISSION_REQUEST_INT: {'target_system': 1, 'target_component': 1, 'seq': 0, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace wait MISSION_ITEM: expecting=['MISSION_ACK', 'MISSION_ITEM', 'MISSION_ITEM_INT'] timeout=0.25s
+2026-04-07 15:59:46 - GCS.Mavlink - WARNING - mission trace wait timeout: state=MISSION_ITEM
+2026-04-07 15:59:46 - GCS.Mavlink - WARNING - MISSION_REQUEST_INT timed out at seq=0; falling back to legacy MISSION_REQUEST
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace send download_request MISSION_REQUEST: {'target_system': 1, 'target_component': 1, 'seq': 0, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace wait MISSION_ITEM: expecting=['MISSION_ACK', 'MISSION_ITEM', 'MISSION_ITEM_INT'] timeout=0.25s
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace recv MISSION_ITEM MISSION_ITEM: {'seq': 0, 'mission_type': 0, 'frame': 3, 'command': 16, 'current': 0, 'autocontinue': 1, 'x': 24.2, 'y': 54.7, 'z': 50.0, 'param1': 0.0, 'param2': 0.0, 'param3': 0.0, 'param4': 0.0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace send download_request MISSION_REQUEST: {'target_system': 1, 'target_component': 1, 'seq': 1, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace wait MISSION_ITEM: expecting=['MISSION_ACK', 'MISSION_ITEM', 'MISSION_ITEM_INT'] timeout=0.25s
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace recv MISSION_ITEM MISSION_ITEM: {'seq': 1, 'mission_type': 0, 'frame': 3, 'command': 16, 'current': 0, 'autocontinue': 1, 'x': 24.201, 'y': 54.701, 'z': 51.0, 'param1': 0.0, 'param2': 0.0, 'param3': 0.0, 'param4': 0.0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission trace send ack MISSION_ACK: {'target_system': 1, 'target_component': 1, 'type': 0, 'mission_type': 0}
+2026-04-07 15:59:46 - GCS.Mavlink - INFO - mission_download_heights: [{'seq': 1, 'type': 'WAYPOINT', 'frame': 3, 'frame_label': 'GLOBAL_REL', 'raw_alt': 50.0, 'loaded_alt': 50.0, 'home_alt_abs': 0.0}, {'seq': 2, 'type': 'WAYPOINT', 'frame': 3, 'frame_label': 'GLOBAL_REL', 'raw_alt': 51.0, 'loaded_alt': 51.0, 'home_alt_abs': 0.0}]

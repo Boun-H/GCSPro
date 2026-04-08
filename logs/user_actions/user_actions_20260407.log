@@ -63,3 +63,16 @@
 2026-04-07 11:24:20 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
 2026-04-07 11:24:20 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
 2026-04-07 11:24:20 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
+2026-04-07 16:00:07 - GCS.UserAction - INFO - {"action": "waypoints_updated", "details": {"total": 0}}
+2026-04-07 16:00:07 - GCS.UserAction - INFO - {"action": "auto_route_updated", "details": {"items_count": 0}}
+2026-04-07 16:00:07 - GCS.UserAction - INFO - {"action": "app_started", "details": {"window_size": "1700x1000"}}
+2026-04-07 16:00:13 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "mp", "x": 110, "y": 90}}
+2026-04-07 16:00:15 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "mp", "x": 110, "y": 90}}
+2026-04-07 16:00:20 - GCS.UserAction - INFO - {"action": "panel_hidden", "details": {"panel": "mp"}}
+2026-04-07 16:00:21 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "links", "x": 96, "y": 90}}
+2026-04-07 16:00:23 - GCS.UserAction - INFO - {"action": "panel_hidden", "details": {"panel": "links"}}
+2026-04-07 16:00:24 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "vehicle", "x": 100, "y": 90}}
+2026-04-07 16:00:30 - GCS.UserAction - INFO - {"action": "panel_hidden", "details": {"panel": "vehicle"}}
+2026-04-07 16:00:31 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "peripherals", "x": 1380, "y": 110}}
+2026-04-07 16:00:38 - GCS.UserAction - INFO - {"action": "panel_hidden", "details": {"panel": "peripherals"}}
+2026-04-07 16:00:40 - GCS.UserAction - INFO - {"action": "panel_shown", "details": {"panel": "analyze", "x": 1338, "y": 110}}
