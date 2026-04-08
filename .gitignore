@@ -40,3 +40,6 @@ Desktop.ini
 .DS_Store
 .AppleDouble
 .LSOverride
+# 无人机地面站缓存
+/logs/
+/offline_map_cache/
