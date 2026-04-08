@@ -27,6 +27,7 @@ class VehiclePanel(QFrame):
     def __init__(self):
         super().__init__()
         self._active_vehicle_id = ""
+        self.setMinimumSize(680, 700)
         self.setStyleSheet(
             "QFrame { background:#121d2d; border:1px solid #2a4362; border-radius:10px; }"
             "QLabel { color:#d9e6f8; }"
@@ -50,6 +51,7 @@ class VehiclePanel(QFrame):
         title = QLabel("Vehicle 视图")
         title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("QGC 风格多机概览 / 参数页 / 任务页 / 控制")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)

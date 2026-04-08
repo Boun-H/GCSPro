@@ -13,6 +13,12 @@ class PeripheralPanelTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_panel_uses_larger_readable_layout(self):
+        panel = PeripheralPanel()
+
+        self.assertGreaterEqual(panel.minimumWidth(), 700)
+        self.assertGreaterEqual(panel.minimumHeight(), 620)
+
     def test_set_values_updates_summary_and_recent_update(self):
         panel = PeripheralPanel()
         panel.set_values(

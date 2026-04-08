@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -48,18 +49,20 @@ class VehicleSetupPanel(QFrame):
         self.wizard_summary: QLabel | None = None
         self.wizard_progress: QProgressBar | None = None
         self.setStyleSheet(build_panel_stylesheet())
+        self.setMinimumSize(720, 760)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(10)
 
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(10, 10, 10, 6)
         title_col = QVBoxLayout()
         title = QLabel("Vehicle Setup")
-        title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
+        title.setStyleSheet("font-size:18px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("Firmware / Airframe / Sensors / Radio / Safety / Tuning")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
@@ -88,6 +91,7 @@ class VehicleSetupPanel(QFrame):
         overview_layout.addWidget(self.quick_actions_summary)
 
         quick_row = QHBoxLayout()
+        quick_row.setSpacing(8)
         self.btn_quick_firmware = QPushButton("固件升级")
         self.btn_quick_sensors = QPushButton("Sensors")
         self.btn_quick_power = QPushButton("Power")
@@ -112,25 +116,35 @@ class VehicleSetupPanel(QFrame):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             label.setWordWrap(True)
-            label.setMinimumHeight(54)
+            label.setMinimumHeight(64)
             self._apply_card_style(label, "neutral")
             self._overview_cards[key] = label
             cards_layout.addWidget(label, idx // 2, idx % 2)
+        cards_layout.setColumnStretch(0, 1)
+        cards_layout.setColumnStretch(1, 1)
         overview_layout.addWidget(cards)
         main_layout.addWidget(overview_box)
 
         nav_row = QWidget()
-        nav_layout = QHBoxLayout(nav_row)
+        nav_layout = QGridLayout(nav_row)
         nav_layout.setContentsMargins(10, 0, 10, 0)
-        nav_layout.setSpacing(6)
-        for key, (title_text, _, _, _, _) in self._SECTION_META.items():
+        nav_layout.setHorizontalSpacing(8)
+        nav_layout.setVerticalSpacing(8)
+        for idx, (key, (title_text, _, _, _, _)) in enumerate(self._SECTION_META.items()):
             btn = QPushButton(title_text)
+            btn.setMinimumHeight(34)
+            btn.setMinimumWidth(118)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(lambda _=False, section=key: self.open_section(section))
             self._nav_buttons[key] = btn
-            nav_layout.addWidget(btn)
+            nav_layout.addWidget(btn, idx // 4, idx % 4)
+        for column in range(4):
+            nav_layout.setColumnStretch(column, 1)
         main_layout.addWidget(nav_row)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().hide()
         main_layout.addWidget(self.tabs, 1)
 
         for index, (key, (title_text, description, group_name, search_text, tip_text)) in enumerate(self._SECTION_META.items()):

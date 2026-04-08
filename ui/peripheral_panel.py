@@ -28,6 +28,7 @@ class PeripheralPanel(QFrame):
     def __init__(self):
         super().__init__()
         self.setStyleSheet(build_panel_stylesheet(include_checks=True))
+        self.setMinimumSize(700, 620)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -37,8 +38,9 @@ class PeripheralPanel(QFrame):
         header_layout.setContentsMargins(10, 10, 10, 6)
         title_col = QVBoxLayout()
         title = QLabel("外围能力")
-        title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
+        title.setStyleSheet("font-size:18px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("Joystick / ADS-B / RTK / Firmware Upgrade / 插件扩展")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)

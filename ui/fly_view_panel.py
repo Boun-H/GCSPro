@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +32,7 @@ class FlyViewPanel(QFrame):
     def __init__(self):
         super().__init__()
         self.setStyleSheet(build_panel_stylesheet())
+        self.setMinimumSize(760, 620)
         self._video_url = ""
         self._metric_cards: dict[str, QLabel] = {}
         self._last_connection_state = "未连接"
@@ -38,39 +41,48 @@ class FlyViewPanel(QFrame):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         header = QWidget()
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 10, 10, 6)
+        header_layout.setContentsMargins(10, 8, 10, 4)
+        header_layout.setSpacing(8)
         title_col = QVBoxLayout()
+        title_col.setSpacing(1)
         title = QLabel("Fly View")
         title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("工具条 / Guided / 任务状态 / 视频 / 相机 / 飞行保护")
-        subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("font-size:11px; color:#8fa4bf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
         header_layout.addLayout(title_col)
         header_layout.addStretch()
         self.updated_at = QLabel("最近更新: --:--:--")
-        self.updated_at.setStyleSheet("font-size:12px; color:#9fb4cf;")
-        header_layout.addWidget(self.updated_at)
+        self.updated_at.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.updated_at.setMinimumWidth(108)
+        self.updated_at.setFixedHeight(24)
+        apply_tone(self.updated_at, "neutral", padding=2, radius=6, font_size=10)
+        header_layout.addWidget(self.updated_at, 0, Qt.AlignmentFlag.AlignVCenter)
         self.close_btn = QPushButton("×")
         style_close_button(self.close_btn)
         header_layout.addWidget(self.close_btn)
         main_layout.addWidget(header)
 
-        body = QVBoxLayout()
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        body_host = QWidget()
+        body = QVBoxLayout(body_host)
         body.setContentsMargins(10, 0, 10, 10)
-        body.setSpacing(8)
+        body.setSpacing(10)
 
         self.status_summary = QLabel("载具: -- | 模式: UNKNOWN | 任务状态: 就绪")
-        apply_tone(self.status_summary, "info", padding=8, radius=8)
+        self.status_summary.setWordWrap(True)
+        apply_tone(self.status_summary, "info", padding=6, radius=8, font_size=11)
         body.addWidget(self.status_summary)
-
-        self.quick_actions_summary = QLabel("快捷操作: Guided Hold / QRTL / 打开视频 / 相机控制")
-        self.quick_actions_summary.setWordWrap(True)
-        apply_tone(self.quick_actions_summary, "neutral", padding=7, radius=8)
-        body.addWidget(self.quick_actions_summary)
 
         metrics = QWidget()
         metrics_layout = QGridLayout(metrics)
@@ -79,17 +91,48 @@ class FlyViewPanel(QFrame):
         metrics_layout.setVerticalSpacing(8)
         for idx, key in enumerate(["battery", "gps", "flight", "position"]):
             label = QLabel("--")
-            label.setMinimumHeight(54)
+            label.setMinimumHeight(68)
             label.setWordWrap(True)
             self._apply_card_style(label, "neutral")
             self._metric_cards[key] = label
             metrics_layout.addWidget(label, idx // 2, idx % 2)
+        metrics_layout.setColumnStretch(0, 1)
+        metrics_layout.setColumnStretch(1, 1)
         body.addWidget(metrics)
         self._set_default_cards()
 
+        self.connection_status = QLabel("连接状态: 未连接")
+        self.mission_status = QLabel("任务执行状态: 未开始")
+        self.camera_status = QLabel("相机状态: 待机")
+        self.alert_status = QLabel("飞行告警: 正常")
+        self.alert_status.setWordWrap(True)
+        self.action_suggestions = QLabel("动作建议: 继续监控遥测与任务进度")
+        self.action_suggestions.setWordWrap(True)
+        apply_tone(self.action_suggestions, "neutral", padding=8, radius=8)
+        for label in [self.connection_status, self.mission_status, self.camera_status, self.alert_status]:
+            label.setWordWrap(True)
+            apply_tone(label, "neutral", padding=6, radius=8)
+
+        status_grid = QGridLayout()
+        status_grid.setHorizontalSpacing(8)
+        status_grid.setVerticalSpacing(8)
+        status_grid.addWidget(self.connection_status, 0, 0)
+        status_grid.addWidget(self.mission_status, 0, 1)
+        status_grid.addWidget(self.camera_status, 1, 0)
+        status_grid.addWidget(self.alert_status, 1, 1)
+        status_grid.setColumnStretch(0, 1)
+        status_grid.setColumnStretch(1, 1)
+        body.addLayout(status_grid)
+        body.addWidget(self.action_suggestions)
+
+        self.quick_actions_summary = QLabel("快捷操作: Guided Hold / QRTL / 打开视频 / 相机控制")
+        self.quick_actions_summary.setWordWrap(True)
+        apply_tone(self.quick_actions_summary, "neutral", padding=5, radius=8, font_size=11)
+        body.addWidget(self.quick_actions_summary)
+
         toolbar = QGridLayout()
-        toolbar.setHorizontalSpacing(6)
-        toolbar.setVerticalSpacing(6)
+        toolbar.setHorizontalSpacing(8)
+        toolbar.setVerticalSpacing(8)
         self.btn_hold = QPushButton("Guided Hold")
         self.btn_resume = QPushButton("继续任务")
         self.btn_takeoff = QPushButton("VTOL 起飞")
@@ -100,52 +143,45 @@ class FlyViewPanel(QFrame):
         toolbar.addWidget(self.btn_takeoff, 1, 0)
         toolbar.addWidget(self.btn_land, 1, 1)
         toolbar.addWidget(self.btn_rtl, 2, 0, 1, 2)
+        toolbar.setColumnStretch(0, 1)
+        toolbar.setColumnStretch(1, 1)
         body.addLayout(toolbar)
 
-        video_row = QHBoxLayout()
+        media_grid = QGridLayout()
+        media_grid.setHorizontalSpacing(8)
+        media_grid.setVerticalSpacing(8)
         self.video_url_edit = QLineEdit()
         self.video_url_edit.setPlaceholderText("输入 HTTP/RTSP 视频流地址")
+        self.video_url_edit.setMinimumHeight(34)
         self.btn_open_video = QPushButton("打开视频")
         self.btn_copy_status = QPushButton("复制遥测")
-        video_row.addWidget(self.video_url_edit, 1)
-        video_row.addWidget(self.btn_open_video)
-        video_row.addWidget(self.btn_copy_status)
-        body.addLayout(video_row)
-
-        camera_row = QHBoxLayout()
         self.btn_snapshot = QPushButton("拍照")
         self.btn_record = QPushButton("开始录像")
         self.btn_stop_record = QPushButton("停止录像")
         self.btn_center_gimbal = QPushButton("云台回中")
-        camera_row.addWidget(self.btn_snapshot)
-        camera_row.addWidget(self.btn_record)
-        camera_row.addWidget(self.btn_stop_record)
-        camera_row.addWidget(self.btn_center_gimbal)
-        body.addLayout(camera_row)
+        media_grid.addWidget(self.video_url_edit, 0, 0, 1, 2)
+        media_grid.addWidget(self.btn_open_video, 0, 2)
+        media_grid.addWidget(self.btn_copy_status, 0, 3)
+        media_grid.addWidget(self.btn_snapshot, 1, 0)
+        media_grid.addWidget(self.btn_record, 1, 1)
+        media_grid.addWidget(self.btn_stop_record, 1, 2)
+        media_grid.addWidget(self.btn_center_gimbal, 1, 3)
+        for column in range(4):
+            media_grid.setColumnStretch(column, 1)
+        body.addLayout(media_grid)
 
-        self.connection_status = QLabel("连接状态: 未连接")
-        self.mission_status = QLabel("任务执行状态: 未开始")
-        self.camera_status = QLabel("相机状态: 待机")
-        self.alert_status = QLabel("飞行告警: 正常")
-        self.alert_status.setWordWrap(True)
-        self.action_suggestions = QLabel("动作建议: 继续监控遥测与任务进度")
-        self.action_suggestions.setWordWrap(True)
-        apply_tone(self.action_suggestions, "neutral", padding=8, radius=8)
         self.btn_toggle_json = QPushButton("展开遥测 JSON")
         style_action_button(self.btn_toggle_json, "info", compact=True)
         self.telemetry_json = QPlainTextEdit()
         self.telemetry_json.setReadOnly(True)
         self.telemetry_json.setPlaceholderText("这里显示当前遥测 JSON 快照")
         self.telemetry_json.hide()
-        body.addWidget(self.connection_status)
-        body.addWidget(self.mission_status)
-        body.addWidget(self.camera_status)
-        body.addWidget(self.alert_status)
-        body.addWidget(self.action_suggestions)
         body.addWidget(self.btn_toggle_json)
         body.addWidget(self.telemetry_json)
+        body.addStretch()
 
-        main_layout.addLayout(body)
+        self.body_scroll.setWidget(body_host)
+        main_layout.addWidget(self.body_scroll, 1)
 
         self.close_btn.clicked.connect(self.close_clicked.emit)
         self.btn_hold.clicked.connect(lambda: self.guided_action_requested.emit("guided_hold"))
@@ -175,6 +211,8 @@ class FlyViewPanel(QFrame):
             (self.btn_center_gimbal, "neutral"),
         ]:
             style_action_button(button, tone, compact=True)
+            button.setMinimumHeight(max(button.minimumHeight(), 34))
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def _apply_card_style(self, label: QLabel, tone: str = "neutral"):
         apply_tone(label, tone, padding=8, radius=8)
@@ -211,6 +249,11 @@ class FlyViewPanel(QFrame):
         )
         self.alert_status.setText(str(report.get("alert_text", "飞行告警: 正常")))
         self.action_suggestions.setText(str(report.get("action_text", "动作建议: 继续监控遥测与任务进度")))
+        connection_tone = "ok" if "已连接" in self._last_connection_state else "warn" if "连接" in self._last_connection_state else "danger"
+        apply_tone(self.connection_status, connection_tone, padding=6, radius=8)
+        apply_tone(self.mission_status, "info", padding=6, radius=8)
+        apply_tone(self.camera_status, "neutral", padding=6, radius=8)
+        apply_tone(self.alert_status, str(report.get("suggestion_tone", "ok")), padding=6, radius=8)
         apply_tone(self.action_suggestions, str(report.get("suggestion_tone", "ok")), padding=8, radius=8)
 
     def set_video_url(self, url: str):

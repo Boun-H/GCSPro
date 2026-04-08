@@ -22,6 +22,7 @@ class LinkManagerPanel(QFrame):
     def __init__(self):
         super().__init__()
         self._active_key = ""
+        self.setMinimumSize(520, 620)
         self.setStyleSheet(
             "QFrame { background:#121d2d; border:1px solid #2a4362; border-radius:10px; }"
             "QLabel { color:#d9e6f8; }"
@@ -42,6 +43,7 @@ class LinkManagerPanel(QFrame):
         title = QLabel("链路管理")
         title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("并行连接的 Serial / TCP / UDP 链路")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)

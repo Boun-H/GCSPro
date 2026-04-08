@@ -129,6 +129,7 @@ class AnalyzePanel(QFrame):
         self._service = AnalyzeService(history_limit=120)
         self.field_checks: dict[str, QCheckBox] = {}
         self.setStyleSheet(build_panel_stylesheet(include_checks=True))
+        self.setMinimumSize(820, 680)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -138,8 +139,9 @@ class AnalyzePanel(QFrame):
         header_layout.setContentsMargins(10, 10, 10, 6)
         title_col = QVBoxLayout()
         title = QLabel("Analyze")
-        title.setStyleSheet("font-size:16px; font-weight:700; color:#eef5ff;")
+        title.setStyleSheet("font-size:18px; font-weight:700; color:#eef5ff;")
         subtitle = QLabel("MAVLink Inspector / 日志下载 / 回放 / 图表 / CSV")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size:12px; color:#9fb4cf;")
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
@@ -234,11 +236,13 @@ class AnalyzePanel(QFrame):
         cards_layout.setVerticalSpacing(8)
         for idx, key in enumerate(["battery", "alt", "vel", "gps"]):
             label = QLabel("--")
-            label.setMinimumHeight(54)
+            label.setMinimumHeight(64)
             label.setWordWrap(True)
             self._apply_card_style(label, "neutral")
             self._chart_cards[key] = label
             cards_layout.addWidget(label, idx // 2, idx % 2)
+        cards_layout.setColumnStretch(0, 1)
+        cards_layout.setColumnStretch(1, 1)
         charts_layout.addWidget(cards)
 
         self.chart_summary = QLabel("趋势摘要: 等待遥测数据")

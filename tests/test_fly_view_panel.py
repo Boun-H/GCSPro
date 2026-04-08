@@ -13,6 +13,13 @@ class FlyViewPanelTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_panel_uses_larger_readable_layout(self):
+        panel = FlyViewPanel()
+
+        self.assertGreaterEqual(panel.minimumWidth(), 760)
+        self.assertGreaterEqual(panel.minimumHeight(), 620)
+        self.assertTrue(panel.body_scroll.widgetResizable())
+
     def test_set_status_payload_updates_metric_cards(self):
         panel = FlyViewPanel()
 

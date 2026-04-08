@@ -817,7 +817,8 @@ class DroneGroundStation(QMainWindow):
         links_layout = QVBoxLayout(self.links_panel)
         links_layout.setContentsMargins(6, 6, 6, 6)
         links_layout.addWidget(self.links_content)
-        self.links_panel.setMinimumSize(440, 640)
+        self.links_panel.setMinimumSize(520, 620)
+        self._resize_links_panel()
         self.links_panel.hide()
         self.links_content.close_clicked.connect(lambda: self.hide_panel(self.links_panel))
         self.links_content.activate_requested.connect(self._on_link_selected)
@@ -829,7 +830,8 @@ class DroneGroundStation(QMainWindow):
         vehicle_layout = QVBoxLayout(self.vehicle_panel)
         vehicle_layout.setContentsMargins(6, 6, 6, 6)
         vehicle_layout.addWidget(self.vehicle_content)
-        self.vehicle_panel.setMinimumSize(420, 640)
+        self.vehicle_panel.setMinimumSize(680, 700)
+        self._resize_vehicle_panel()
         self.vehicle_panel.hide()
         self.vehicle_content.close_clicked.connect(lambda: self.hide_panel(self.vehicle_panel))
         self.vehicle_content.vehicle_selected.connect(self._on_vehicle_selected)
@@ -844,7 +846,8 @@ class DroneGroundStation(QMainWindow):
         mp_layout = QVBoxLayout(self.mp_panel)
         mp_layout.setContentsMargins(6, 6, 6, 6)
         mp_layout.addWidget(self.mp_workbench_panel)
-        self.mp_panel.setMinimumSize(520, 720)
+        self.mp_panel.setMinimumSize(620, 760)
+        self._resize_mp_panel()
         self.mp_panel.hide()
         self.mp_workbench_panel.close_clicked.connect(lambda: self.hide_panel(self.mp_panel))
         self.mp_workbench_panel.action_requested.connect(self._handle_mp_action_requested)
@@ -854,7 +857,8 @@ class DroneGroundStation(QMainWindow):
         setup_layout = QVBoxLayout(self.setup_panel)
         setup_layout.setContentsMargins(6, 6, 6, 6)
         setup_layout.addWidget(self.setup_content)
-        self.setup_panel.setMinimumSize(480, 520)
+        self.setup_panel.setMinimumSize(720, 760)
+        self._resize_setup_panel()
         self.setup_panel.hide()
         self.setup_content.close_clicked.connect(lambda: self.hide_panel(self.setup_panel))
         self.setup_content.param_focus_requested.connect(self._focus_param_group)
@@ -865,7 +869,8 @@ class DroneGroundStation(QMainWindow):
         fly_layout = QVBoxLayout(self.fly_view_panel)
         fly_layout.setContentsMargins(6, 6, 6, 6)
         fly_layout.addWidget(self.fly_view_content)
-        self.fly_view_panel.setMinimumSize(520, 440)
+        self.fly_view_panel.setMinimumSize(760, 620)
+        self._resize_fly_view_panel()
         self.fly_view_panel.hide()
         self.fly_view_content.close_clicked.connect(lambda: self.hide_panel(self.fly_view_panel))
         self.fly_view_content.guided_action_requested.connect(self._handle_fly_guided_action)
@@ -878,7 +883,8 @@ class DroneGroundStation(QMainWindow):
         analyze_layout = QVBoxLayout(self.analyze_panel)
         analyze_layout.setContentsMargins(6, 6, 6, 6)
         analyze_layout.addWidget(self.analyze_content)
-        self.analyze_panel.setMinimumSize(560, 500)
+        self.analyze_panel.setMinimumSize(820, 680)
+        self._resize_analyze_panel()
         self.analyze_panel.hide()
         self.analyze_content.close_clicked.connect(lambda: self.hide_panel(self.analyze_panel))
         self.analyze_content.refresh_requested.connect(self._refresh_analyze_panel)
@@ -891,7 +897,8 @@ class DroneGroundStation(QMainWindow):
         peripheral_layout = QVBoxLayout(self.peripheral_panel)
         peripheral_layout.setContentsMargins(6, 6, 6, 6)
         peripheral_layout.addWidget(self.peripheral_content)
-        self.peripheral_panel.setMinimumSize(520, 500)
+        self.peripheral_panel.setMinimumSize(700, 620)
+        self._resize_peripheral_panel()
         self.peripheral_panel.hide()
         self.peripheral_content.close_clicked.connect(lambda: self.hide_panel(self.peripheral_panel))
         self.peripheral_content.save_requested.connect(self._save_peripheral_config)
@@ -914,6 +921,41 @@ class DroneGroundStation(QMainWindow):
         panel_width = max(700, min(860, int(self.width() * 0.42)))
         panel_height = max(720, min(900, self.height() - 120))
         self.param_panel.resize(panel_width, panel_height)
+
+    def _resize_setup_panel(self):
+        panel_width = max(720, min(940, int(self.width() * 0.48)))
+        panel_height = max(760, min(940, self.height() - 110))
+        self.setup_panel.resize(panel_width, panel_height)
+
+    def _resize_links_panel(self):
+        panel_width = max(520, min(660, int(self.width() * 0.34)))
+        panel_height = max(620, min(840, self.height() - 120))
+        self.links_panel.resize(panel_width, panel_height)
+
+    def _resize_vehicle_panel(self):
+        panel_width = max(680, min(920, int(self.width() * 0.44)))
+        panel_height = max(700, min(920, self.height() - 110))
+        self.vehicle_panel.resize(panel_width, panel_height)
+
+    def _resize_mp_panel(self):
+        panel_width = max(620, min(860, int(self.width() * 0.46)))
+        panel_height = max(760, min(940, self.height() - 100))
+        self.mp_panel.resize(panel_width, panel_height)
+
+    def _resize_fly_view_panel(self):
+        panel_width = max(760, min(1040, int(self.width() * 0.54)))
+        panel_height = max(620, min(900, int(self.height() * 0.74)))
+        self.fly_view_panel.resize(panel_width, panel_height)
+
+    def _resize_analyze_panel(self):
+        panel_width = max(820, min(1080, int(self.width() * 0.58)))
+        panel_height = max(680, min(920, self.height() - 110))
+        self.analyze_panel.resize(panel_width, panel_height)
+
+    def _resize_peripheral_panel(self):
+        panel_width = max(700, min(900, int(self.width() * 0.46)))
+        panel_height = max(620, min(860, self.height() - 110))
+        self.peripheral_panel.resize(panel_width, panel_height)
 
     def refresh_map_waypoints(self, recenter=False):
         if recenter and self.waypoints:
@@ -1068,6 +1110,7 @@ class DroneGroundStation(QMainWindow):
         self.refresh_map_waypoints(recenter=bool(self.waypoints))
 
     def _open_setup_panel(self, section: str = "summary"):
+        self._resize_setup_panel()
         self.setup_content.set_vehicle(self.vehicle_manager.active_vehicle())
         self.setup_content.open_section(section)
         self.show_panel(self.setup_panel)
@@ -2993,6 +3036,20 @@ class DroneGroundStation(QMainWindow):
             self._resize_waypoint_panel()
         if hasattr(self, "param_panel") and self.param_panel is not None:
             self._resize_param_panel()
+        if hasattr(self, "setup_panel") and self.setup_panel is not None:
+            self._resize_setup_panel()
+        if hasattr(self, "links_panel") and self.links_panel is not None:
+            self._resize_links_panel()
+        if hasattr(self, "vehicle_panel") and self.vehicle_panel is not None:
+            self._resize_vehicle_panel()
+        if hasattr(self, "mp_panel") and self.mp_panel is not None:
+            self._resize_mp_panel()
+        if hasattr(self, "fly_view_panel") and self.fly_view_panel is not None:
+            self._resize_fly_view_panel()
+        if hasattr(self, "analyze_panel") and self.analyze_panel is not None:
+            self._resize_analyze_panel()
+        if hasattr(self, "peripheral_panel") and self.peripheral_panel is not None:
+            self._resize_peripheral_panel()
         self.panel_manager.constrain_visible_panels()
         if hasattr(self, "_notice_overlay") and self._notice_overlay is not None:
             self._notice_overlay.raise_()

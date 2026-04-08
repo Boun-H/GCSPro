@@ -13,6 +13,12 @@ class AnalyzePanelTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_panel_uses_larger_readable_layout(self):
+        panel = AnalyzePanel()
+
+        self.assertGreaterEqual(panel.minimumWidth(), 820)
+        self.assertGreaterEqual(panel.minimumHeight(), 680)
+
     def test_chart_cards_and_trend_text_update(self):
         panel = AnalyzePanel()
 

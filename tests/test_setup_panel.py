@@ -21,6 +21,13 @@ class VehicleSetupPanelTests(unittest.TestCase):
         self.assertEqual(panel.tabs.tabText(panel.tabs.currentIndex()), "Power")
         self.assertEqual(panel._nav_buttons["power"].property("active"), "true")
 
+    def test_setup_panel_uses_large_readable_layout(self):
+        panel = VehicleSetupPanel()
+
+        self.assertGreaterEqual(panel.minimumWidth(), 720)
+        self.assertTrue(panel.tabs.tabBar().isHidden())
+        self.assertGreaterEqual(len(panel._nav_buttons), 8)
+
     def test_set_vehicle_updates_overview_and_section_text(self):
         panel = VehicleSetupPanel()
 
