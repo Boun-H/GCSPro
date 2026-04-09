@@ -1,5 +1,6 @@
 import json
 import math
+import mimetypes
 import shutil
 import threading
 from array import array
@@ -23,14 +24,79 @@ class TileSchemeHandler(QWebEngineUrlSchemeHandler):
         super().__init__(parent)
         self._root = cache_root
 
+    def _resolve_local_path(self, url) -> Path:
+        segments: list[str] = []
+        host = (url.host() or "").strip("/")
+        raw_path = (url.path() or "").strip("/")
+        if host:
+            segments.extend(part for part in host.split("/") if part)
+        if raw_path:
+            segments.extend(part for part in raw_path.split("/") if part)
+        if not segments:
+            return self._root
+        return self._root.joinpath(*segments)
+
+    def _resolve_existing_path(self, rel_path: Path) -> Path | None:
+        direct_path = rel_path if rel_path.is_absolute() else self._root / rel_path
+        if direct_path.is_file():
+            return direct_path
+
+        try:
+            relative_path = direct_path.relative_to(self._root)
+        except ValueError:
+            relative_path = rel_path
+
+        parts = relative_path.parts
+        try:
+            if len(parts) >= 5 and parts[0] == "tiles":
+                layer_name = parts[1]
+                zoom = int(parts[2])
+                tile_x = int(parts[3])
+                tile_y = int(Path(parts[4]).stem)
+                for parent_zoom in range(zoom - 1, -1, -1):
+                    shift = zoom - parent_zoom
+                    fallback_x = tile_x >> shift
+                    fallback_y = tile_y >> shift
+                    fallback_path = self._root / "tiles" / layer_name / str(parent_zoom) / str(fallback_x) / f"{fallback_y}.png"
+                    if fallback_path.is_file():
+                        return fallback_path
+
+            if len(parts) >= 4 and parts[0] == "elevation":
+                zoom = int(parts[1])
+                tile_x = int(parts[2])
+                tile_y = int(Path(parts[3]).stem)
+                for parent_zoom in range(zoom - 1, -1, -1):
+                    shift = zoom - parent_zoom
+                    fallback_x = tile_x >> shift
+                    fallback_y = tile_y >> shift
+                    fallback_path = self._root / "elevation" / str(parent_zoom) / str(fallback_x) / f"{fallback_y}.png"
+                    if fallback_path.is_file():
+                        return fallback_path
+        except (TypeError, ValueError):
+            return None
+
+        return None
+
+    @staticmethod
+    def _guess_mime_type(path: Path) -> bytes:
+        suffix = path.suffix.lower()
+        if suffix == ".js":
+            return b"text/javascript"
+        if suffix == ".css":
+            return b"text/css"
+        if suffix == ".svg":
+            return b"image/svg+xml"
+        mime_type, _encoding = mimetypes.guess_type(path.name)
+        return (mime_type or "application/octet-stream").encode("ascii")
+
     def requestStarted(self, job: QWebEngineUrlRequestJob):
-        rel = job.requestUrl().path().lstrip("/")
-        tile_path = self._root / rel
-        if tile_path.is_file():
+        rel_path = self._resolve_local_path(job.requestUrl())
+        local_path = self._resolve_existing_path(rel_path)
+        if local_path and local_path.is_file():
             buf = QBuffer(parent=job)
+            buf.setData(local_path.read_bytes())
             buf.open(QBuffer.OpenModeFlag.ReadOnly)
-            buf.setData(tile_path.read_bytes())
-            job.reply(b"image/png", buf)
+            job.reply(self._guess_mime_type(local_path), buf)
         else:
             job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
 
@@ -600,6 +666,13 @@ class MapController(QObject):
         except Exception as exc:
             logger.warning("Center cache scheduling failed: %s", exc)
 
+    def _has_offline_tiles(self, map_name: str) -> bool:
+        dir_name = self._map_cache_dir_name(map_name)
+        root = OFFLINE_TILE_DIR / dir_name
+        if not root.exists():
+            return False
+        return next(root.rglob("*.png"), None) is not None
+
     def _build_html(self) -> str:
         tile_config = {
             name: {
@@ -607,6 +680,7 @@ class MapController(QObject):
                 "attr": source["attr"],
                 "maxZoom": 21,
                 "offline": self._offline_tile_template(name),
+                "offlineAvailable": self._has_offline_tiles(name),
                 "dem_online": ELEVATION_TERRARIUM_URL,
                 "dem_offline": self._offline_elevation_template(),
             }
@@ -1017,9 +1091,13 @@ class MapController(QObject):
             }}
             if (index >= window._gcsLeafletAssets.js.length) {{
                 window._gcsMapBootstrapError = 'Leaflet 所有 CDN 均不可访问';
-                document.getElementById('map').innerHTML = '<div style="padding:40px;color:#ef4444;font-size:14px;font-weight:600;background:#1e293b;height:100%;box-sizing:border-box;">⚠ 地图加载失败：Leaflet 资源不可访问。</div>';
-                setMapStatus(window._gcsMapBootstrapError, 'error');
-                console.error('[GCS] Leaflet failed to load from all CDN candidates');
+                console.warn('[GCS] Leaflet failed to load from all CDN candidates, switching to offline fallback');
+                if (typeof window.startOfflineMapFallback === 'function') {{
+                    window.startOfflineMapFallback();
+                }} else {{
+                    document.getElementById('map').innerHTML = '<div style="padding:40px;color:#ef4444;font-size:14px;font-weight:600;background:#1e293b;height:100%;box-sizing:border-box;">⚠ 地图加载失败：Leaflet 资源不可访问。</div>';
+                    setMapStatus(window._gcsMapBootstrapError, 'error');
+                }}
                 return;
             }}
             const src = window._gcsLeafletAssets.js[index];
@@ -1087,6 +1165,11 @@ class MapController(QObject):
         function getFallbackMapName(excludedName) {{
             const names = Object.keys(mapSources);
             const sorted = names.slice().sort(function(a, b) {{
+                const aCached = mapSources[a] && mapSources[a].offlineAvailable ? 1 : 0;
+                const bCached = mapSources[b] && mapSources[b].offlineAvailable ? 1 : 0;
+                if (aCached !== bCached) {{
+                    return bCached - aCached;
+                }}
                 return (providerFailures[a] || 0) - (providerFailures[b] || 0);
             }});
             for (const name of sorted) {{
@@ -1106,6 +1189,675 @@ class MapController(QObject):
             setMapStatus('当前底图源不可用，已切换到 ' + fallback, 'warning');
             window.setMapSource(fallback);
         }}
+
+        window.startOfflineMapFallback = function() {{
+            if (window._gcsMapStarted) {{
+                return;
+            }}
+            window._gcsMapStarted = true;
+            window._gcsOfflineFallback = true;
+
+            const mapEl = document.getElementById('map');
+            const coordLonEl = document.getElementById('coordLon');
+            const coordLatEl = document.getElementById('coordLat');
+            const coordAltEl = document.getElementById('coordAlt');
+            const measureInfoEl = document.getElementById('measureInfo');
+            const btnFitMission = document.getElementById('btnFitMission');
+            const btnLocateAircraft = document.getElementById('btnLocateAircraft');
+            const btnMeasure = document.getElementById('btnMeasure');
+            const btnFollowAircraft = document.getElementById('btnFollowAircraft');
+            const cachedDefaultMap = Object.keys(mapSources).find(function(name) {{
+                return mapSources[name] && mapSources[name].offlineAvailable;
+            }});
+            if ((!currentMapName || !mapSources[currentMapName] || !mapSources[currentMapName].offlineAvailable) && cachedDefaultMap) {{
+                currentMapName = cachedDefaultMap;
+            }}
+
+            const fallbackState = {{
+                center: {{ lat: Number({self.current_center[0]}), lng: Number({self.current_center[1]}) }},
+                zoom: Math.max(4, Math.min(21, Number({self.current_zoom}))),
+                mapName: currentMapName || Object.keys(mapSources)[0],
+                waypoints: [],
+                autoRoute: [],
+                overlay: {{ home: null, vehicle: null, measureMode: false, followAircraft: false }},
+            }};
+            const fallbackHandlers = {{}};
+
+            function normalizeLatLng(value) {{
+                if (!value) {{
+                    return null;
+                }}
+                if (Array.isArray(value) && value.length >= 2) {{
+                    const lat = Number(value[0]);
+                    const lng = Number(value[1]);
+                    return Number.isFinite(lat) && Number.isFinite(lng) ? {{ lat: lat, lng: lng }} : null;
+                }}
+                const lat = Number(value.lat);
+                const lng = Number(Object.prototype.hasOwnProperty.call(value, 'lng') ? value.lng : value.lon);
+                return Number.isFinite(lat) && Number.isFinite(lng) ? {{ lat: lat, lng: lng }} : null;
+            }}
+
+            function lonToWorldX(lon, zoom) {{
+                return ((Number(lon) + 180.0) / 360.0) * 256 * Math.pow(2, zoom);
+            }}
+
+            function latToWorldY(lat, zoom) {{
+                const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, Number(lat)));
+                const rad = clampedLat * Math.PI / 180.0;
+                return (1.0 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2.0 * 256 * Math.pow(2, zoom);
+            }}
+
+            function worldToLon(x, zoom) {{
+                return x / (256 * Math.pow(2, zoom)) * 360.0 - 180.0;
+            }}
+
+            function worldToLat(y, zoom) {{
+                const n = Math.PI - (2.0 * Math.PI * y) / (256 * Math.pow(2, zoom));
+                return 180.0 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+            }}
+
+            function getBoundsObject() {{
+                const width = Math.max(320, mapEl.clientWidth || mapEl.offsetWidth || 320);
+                const height = Math.max(240, mapEl.clientHeight || mapEl.offsetHeight || 240);
+                const centerX = lonToWorldX(fallbackState.center.lng, fallbackState.zoom);
+                const centerY = latToWorldY(fallbackState.center.lat, fallbackState.zoom);
+                const west = worldToLon(centerX - width / 2, fallbackState.zoom);
+                const east = worldToLon(centerX + width / 2, fallbackState.zoom);
+                const north = worldToLat(centerY - height / 2, fallbackState.zoom);
+                const south = worldToLat(centerY + height / 2, fallbackState.zoom);
+                return {{
+                    getWest: function() {{ return west; }},
+                    getEast: function() {{ return east; }},
+                    getNorth: function() {{ return north; }},
+                    getSouth: function() {{ return south; }},
+                }};
+            }}
+
+            function latLngToContainerPoint(latlng) {{
+                const point = normalizeLatLng(latlng);
+                if (!point) {{
+                    return {{ x: 0, y: 0 }};
+                }}
+                const width = Math.max(320, mapEl.clientWidth || mapEl.offsetWidth || 320);
+                const height = Math.max(240, mapEl.clientHeight || mapEl.offsetHeight || 240);
+                const centerX = lonToWorldX(fallbackState.center.lng, fallbackState.zoom);
+                const centerY = latToWorldY(fallbackState.center.lat, fallbackState.zoom);
+                return {{
+                    x: lonToWorldX(point.lng, fallbackState.zoom) - centerX + width / 2,
+                    y: latToWorldY(point.lat, fallbackState.zoom) - centerY + height / 2,
+                }};
+            }}
+
+            function containerEventToLatLng(event) {{
+                const rect = mapEl.getBoundingClientRect();
+                const width = Math.max(1, rect.width || mapEl.clientWidth || 1);
+                const height = Math.max(1, rect.height || mapEl.clientHeight || 1);
+                const offsetX = Number(event.clientX - rect.left);
+                const offsetY = Number(event.clientY - rect.top);
+                const centerX = lonToWorldX(fallbackState.center.lng, fallbackState.zoom);
+                const centerY = latToWorldY(fallbackState.center.lat, fallbackState.zoom);
+                return {{
+                    lat: worldToLat(centerY - height / 2 + offsetY, fallbackState.zoom),
+                    lng: worldToLon(centerX - width / 2 + offsetX, fallbackState.zoom),
+                }};
+            }}
+
+            function emitMapEvent(name, payload) {{
+                (fallbackHandlers[name] || []).forEach(function(handler) {{
+                    try {{
+                        handler(payload);
+                    }} catch (err) {{
+                        console.warn('[GCS] offline fallback event failed', name, err);
+                    }}
+                }});
+            }}
+
+            function setCoordDisplay(latlng) {{
+                if (coordLonEl) {{
+                    coordLonEl.textContent = '经度: ' + (latlng ? Number(latlng.lng).toFixed(7) : '--');
+                }}
+                if (coordLatEl) {{
+                    coordLatEl.textContent = '纬度: ' + (latlng ? Number(latlng.lat).toFixed(7) : '--');
+                }}
+                if (coordAltEl) {{
+                    coordAltEl.textContent = '高程: --';
+                }}
+            }}
+
+            function setMeasureInfo(text) {{
+                if (measureInfoEl) {{
+                    measureInfoEl.textContent = '测距: ' + (text || '--');
+                }}
+            }}
+
+            function buildTileUrl(mapName, z, x, y) {{
+                const source = mapSources[mapName] || mapSources[Object.keys(mapSources)[0]];
+                if (!source || !source.offline) {{
+                    return '';
+                }}
+                return source.offline
+                    .replace('{{z}}', String(z))
+                    .replace('{{x}}', String(x))
+                    .replace('{{y}}', String(y));
+            }}
+
+            function emitAddWaypointAtFallback(latlng) {{
+                if (!latlng) {{
+                    return;
+                }}
+                const point = latLngToContainerPoint(latlng);
+                const payload = {{
+                    lat: Number(latlng.lat),
+                    lon: Number(latlng.lng),
+                    x: Number(point.x || 0),
+                    y: Number(point.y || 0),
+                    alt: 50.0,
+                }};
+                if (!mapBridge) {{
+                    if (pendingWaypointAdds.length > 30) {{
+                        pendingWaypointAdds.shift();
+                    }}
+                    pendingWaypointAdds.push(payload);
+                    setMapStatus('地图桥接未就绪，正在重试…', 'warning');
+                    bindBridgeFallback();
+                    return;
+                }}
+                if (typeof mapBridge.addWaypointDetailed === 'function') {{
+                    mapBridge.addWaypointDetailed(JSON.stringify(payload));
+                    return;
+                }}
+                if (typeof mapBridge.addWaypointAny === 'function') {{
+                    mapBridge.addWaypointAny(Number(payload.lat), Number(payload.lon));
+                    return;
+                }}
+                if (typeof mapBridge.addWaypoint === 'function') {{
+                    mapBridge.addWaypoint(Number(payload.lat), Number(payload.lon));
+                }}
+            }}
+
+            function emitHomePickFallback(latlng) {{
+                if (!latlng || !mapBridge) {{
+                    return;
+                }}
+                if (typeof mapBridge.setHomePointAny === 'function') {{
+                    mapBridge.setHomePointAny(JSON.stringify({{ lat: Number(latlng.lat), lon: Number(latlng.lng), alt: 0.0 }}));
+                    return;
+                }}
+                if (typeof mapBridge.homePickedFromMapAny === 'function') {{
+                    mapBridge.homePickedFromMapAny(Number(latlng.lat), Number(latlng.lng));
+                }}
+            }}
+
+            function renderFallback() {{
+                if (!document.getElementById('offlineFallbackRoot')) {{
+                    mapEl.innerHTML = '<div id="offlineFallbackRoot" style="position:relative;width:100%;height:100%;overflow:hidden;background:#0f172a;">'
+                        + '<div id="offlineFallbackTiles" style="position:absolute;inset:0;background:#0b1220;"></div>'
+                        + '<svg id="offlineFallbackRoutes" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></svg>'
+                        + '<div id="offlineFallbackMarkers" style="position:absolute;inset:0;pointer-events:none;"></div>'
+                        + '<div id="offlineFallbackBadge" style="position:absolute;right:12px;top:12px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,0.86);border:1px solid rgba(148,163,184,0.35);color:#f8fafc;font-size:12px;box-shadow:0 8px 20px rgba(15,23,42,0.24);">离线地图缓存</div>'
+                        + '</div>';
+                }}
+
+                const width = Math.max(320, mapEl.clientWidth || mapEl.offsetWidth || 320);
+                const height = Math.max(240, mapEl.clientHeight || mapEl.offsetHeight || 240);
+                const tilesEl = document.getElementById('offlineFallbackTiles');
+                const routesEl = document.getElementById('offlineFallbackRoutes');
+                const markersEl = document.getElementById('offlineFallbackMarkers');
+                const badgeEl = document.getElementById('offlineFallbackBadge');
+                if (!tilesEl || !routesEl || !markersEl) {{
+                    return;
+                }}
+                if (badgeEl) {{
+                    badgeEl.textContent = '离线地图 | ' + fallbackState.mapName + ' | Z' + fallbackState.zoom;
+                }}
+
+                const tileSize = 256;
+                const maxIndex = Math.max(1, Math.pow(2, fallbackState.zoom));
+                const centerX = lonToWorldX(fallbackState.center.lng, fallbackState.zoom);
+                const centerY = latToWorldY(fallbackState.center.lat, fallbackState.zoom);
+                const leftX = centerX - width / 2;
+                const topY = centerY - height / 2;
+                const startX = Math.floor(leftX / tileSize);
+                const endX = Math.floor((leftX + width) / tileSize);
+                const startY = Math.floor(topY / tileSize);
+                const endY = Math.floor((topY + height) / tileSize);
+
+                let tilesHtml = '';
+                for (let x = startX; x <= endX; x += 1) {{
+                    for (let y = startY; y <= endY; y += 1) {{
+                        if (y < 0 || y >= maxIndex) {{
+                            continue;
+                        }}
+                        const px = Math.round(x * tileSize - leftX);
+                        const py = Math.round(y * tileSize - topY);
+                        const wrappedX = ((x % maxIndex) + maxIndex) % maxIndex;
+                        const src = buildTileUrl(fallbackState.mapName, fallbackState.zoom, wrappedX, y);
+                        tilesHtml += '<img alt="tile" src="' + src + '" style="position:absolute;left:' + px + 'px;top:' + py + 'px;width:' + tileSize + 'px;height:' + tileSize + 'px;object-fit:cover;background:#172033;border:1px solid rgba(15,23,42,0.12);" onerror="this.style.opacity=0.18;this.style.backgroundColor=&quot;#1e293b&quot;;" />';
+                    }}
+                }}
+                tilesEl.innerHTML = tilesHtml;
+                routesEl.innerHTML = '';
+                markersEl.innerHTML = '';
+
+                function placeMarker(lat, lng, label, bg) {{
+                    const point = latLngToContainerPoint({{ lat: lat, lng: lng }});
+                    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {{
+                        return;
+                    }}
+                    const node = document.createElement('div');
+                    node.textContent = label;
+                    node.style.cssText = 'position:absolute;left:' + (point.x - 14) + 'px;top:' + (point.y - 14) + 'px;width:28px;height:28px;border-radius:50%;background:' + bg + ';color:#fff;border:2px solid #ffffff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 4px 10px rgba(15,23,42,0.35);';
+                    markersEl.appendChild(node);
+                }}
+
+                const routePoints = [];
+                fallbackState.waypoints.forEach(function(wp, index) {{
+                    const lat = Number(wp.lat);
+                    const lon = Number(wp.lon);
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {{
+                        return;
+                    }}
+                    const pt = latLngToContainerPoint({{ lat: lat, lng: lon }});
+                    routePoints.push(Math.round(pt.x) + ',' + Math.round(pt.y));
+                    const seq = Number(wp && wp.seq);
+                    const label = Number.isFinite(seq) && seq > 0 ? String(Math.floor(seq)) : String(index + 1);
+                    placeMarker(lat, lon, label, '#2563eb');
+                }});
+                if (routePoints.length > 1) {{
+                    routesEl.innerHTML += '<polyline points="' + routePoints.join(' ') + '" fill="none" stroke="#38bdf8" stroke-width="3" opacity="0.92" />';
+                }}
+
+                const autoRoutePoints = [];
+                (fallbackState.autoRoute || []).forEach(function(item) {{
+                    const lat = Number(item.lat);
+                    const lon = Number(item.lon);
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {{
+                        return;
+                    }}
+                    const pt = latLngToContainerPoint({{ lat: lat, lng: lon }});
+                    autoRoutePoints.push(Math.round(pt.x) + ',' + Math.round(pt.y));
+                    placeMarker(lat, lon, String(item.name || 'A'), '#7c3aed');
+                }});
+                if (autoRoutePoints.length > 1) {{
+                    routesEl.innerHTML += '<polyline points="' + autoRoutePoints.join(' ') + '" fill="none" stroke="#a855f7" stroke-width="2" opacity="0.8" stroke-dasharray="5,5" />';
+                }}
+
+                if (fallbackState.overlay.home && Number.isFinite(Number(fallbackState.overlay.home.lat)) && Number.isFinite(Number(fallbackState.overlay.home.lon))) {{
+                    placeMarker(Number(fallbackState.overlay.home.lat), Number(fallbackState.overlay.home.lon), 'H', '#0f766e');
+                }}
+                if (fallbackState.overlay.vehicle && Number.isFinite(Number(fallbackState.overlay.vehicle.lat)) && Number.isFinite(Number(fallbackState.overlay.vehicle.lon))) {{
+                    placeMarker(Number(fallbackState.overlay.vehicle.lat), Number(fallbackState.overlay.vehicle.lon), '✈', '#16a34a');
+                }}
+            }}
+
+            function bindBridgeFallback() {{
+                if (mapBridge || bridgeBindingInProgress) {{
+                    return;
+                }}
+                if (!window.qt || !window.qt.webChannelTransport) {{
+                    window.setTimeout(bindBridgeFallback, 120);
+                    return;
+                }}
+                bridgeBindingInProgress = true;
+                try {{
+                    new QWebChannel(window.qt.webChannelTransport, function(channel) {{
+                        bridgeBindingInProgress = false;
+                        const candidate = channel && channel.objects ? channel.objects.mapBridge : null;
+                        if (!candidate) {{
+                            window.setTimeout(bindBridgeFallback, 180);
+                            return;
+                        }}
+                        mapBridge = candidate;
+                        if (pendingWaypointAdds.length > 0) {{
+                            const queued = pendingWaypointAdds.slice();
+                            pendingWaypointAdds = [];
+                            queued.forEach(function(item) {{
+                                if (typeof mapBridge.addWaypointDetailed === 'function') {{
+                                    mapBridge.addWaypointDetailed(JSON.stringify(item));
+                                }} else if (typeof mapBridge.addWaypointAny === 'function') {{
+                                    mapBridge.addWaypointAny(Number(item.lat), Number(item.lon));
+                                }} else if (typeof mapBridge.addWaypoint === 'function') {{
+                                    mapBridge.addWaypoint(Number(item.lat), Number(item.lon));
+                                }}
+                            }});
+                        }}
+                    }});
+                }} catch (err) {{
+                    bridgeBindingInProgress = false;
+                    console.warn('[GCS] offline bridge bind failed', err);
+                    window.setTimeout(bindBridgeFallback, 200);
+                }}
+            }}
+
+            if (!mapEl.dataset.offlineFallbackBound) {{
+                mapEl.dataset.offlineFallbackBound = '1';
+                mapEl.addEventListener('mousemove', function(event) {{
+                    const latlng = containerEventToLatLng(event);
+                    setCoordDisplay(latlng);
+                    emitMapEvent('mousemove', {{ latlng: latlng }});
+                }});
+                mapEl.addEventListener('mouseleave', function() {{
+                    setCoordDisplay(null);
+                    emitMapEvent('mouseout', {{}});
+                }});
+                mapEl.addEventListener('click', function(event) {{
+                    const latlng = containerEventToLatLng(event);
+                    if (measureMode) {{
+                        setMeasureInfo('离线简化模式');
+                    }} else if (homePickMode) {{
+                        homePickMode = false;
+                        mapEl.style.cursor = addWaypointMode ? 'crosshair' : 'default';
+                        emitHomePickFallback(latlng);
+                    }} else if (addWaypointMode) {{
+                        emitAddWaypointAtFallback(latlng);
+                    }}
+                    emitMapEvent('click', {{ latlng: latlng }});
+                }});
+                mapEl.addEventListener('contextmenu', function(event) {{
+                    event.preventDefault();
+                    emitMapEvent('contextmenu', {{ latlng: containerEventToLatLng(event), originalEvent: event }});
+                }});
+                window.addEventListener('resize', function() {{
+                    renderFallback();
+                    emitMapEvent('moveend', {{ latlng: fallbackState.center }});
+                }});
+            }}
+
+            if (!btnFitMission.dataset.fallbackBound) {{
+                btnFitMission.dataset.fallbackBound = '1';
+                btnFitMission.addEventListener('click', function() {{
+                    window.fitMissionRoute();
+                }});
+                btnLocateAircraft.addEventListener('click', function() {{
+                    window.locateAircraft();
+                }});
+                btnMeasure.addEventListener('click', function() {{
+                    measureMode = !measureMode;
+                    fallbackState.overlay.measureMode = measureMode;
+                    btnMeasure.classList.toggle('active', measureMode);
+                    setMeasureInfo(measureMode ? '离线简化模式' : '--');
+                }});
+                btnFollowAircraft.addEventListener('click', function() {{
+                    followAircraft = !followAircraft;
+                    fallbackState.overlay.followAircraft = followAircraft;
+                    btnFollowAircraft.classList.toggle('active', followAircraft);
+                    if (followAircraft && fallbackState.overlay.vehicle) {{
+                        window.locateAircraft();
+                    }}
+                }});
+            }}
+
+            window.map = {{
+                setView: function(center, zoom) {{
+                    const nextCenter = normalizeLatLng(center);
+                    if (nextCenter) {{
+                        fallbackState.center = nextCenter;
+                    }}
+                    if (zoom !== undefined && zoom !== null && Number.isFinite(Number(zoom))) {{
+                        fallbackState.zoom = Math.max(4, Math.min(21, Number(zoom)));
+                    }}
+                    renderFallback();
+                    emitMapEvent('moveend', {{ latlng: fallbackState.center }});
+                    emitMapEvent('zoomend', {{ zoom: fallbackState.zoom }});
+                    return this;
+                }},
+                getZoom: function() {{
+                    return fallbackState.zoom;
+                }},
+                getBounds: function() {{
+                    return getBoundsObject();
+                }},
+                getContainer: function() {{
+                    return mapEl;
+                }},
+                latLngToContainerPoint: function(latlng) {{
+                    return latLngToContainerPoint(latlng);
+                }},
+                panTo: function(center) {{
+                    return this.setView(center, fallbackState.zoom);
+                }},
+                fitBounds: function(bounds) {{
+                    if (!bounds) {{
+                        return this;
+                    }}
+                    let west = null;
+                    let east = null;
+                    let north = null;
+                    let south = null;
+                    if (typeof bounds.getWest === 'function') {{
+                        west = Number(bounds.getWest());
+                        east = Number(bounds.getEast());
+                        north = Number(bounds.getNorth());
+                        south = Number(bounds.getSouth());
+                    }} else if (Array.isArray(bounds) && bounds.length >= 2) {{
+                        const p1 = normalizeLatLng(bounds[0]);
+                        const p2 = normalizeLatLng(bounds[1]);
+                        if (p1 && p2) {{
+                            west = Math.min(p1.lng, p2.lng);
+                            east = Math.max(p1.lng, p2.lng);
+                            south = Math.min(p1.lat, p2.lat);
+                            north = Math.max(p1.lat, p2.lat);
+                        }}
+                    }}
+                    if (west !== null && east !== null && north !== null && south !== null) {{
+                        return this.setView({{ lat: (north + south) / 2, lng: (west + east) / 2 }}, fallbackState.zoom);
+                    }}
+                    return this;
+                }},
+                on: function(name, handler) {{
+                    if (!fallbackHandlers[name]) {{
+                        fallbackHandlers[name] = [];
+                    }}
+                    fallbackHandlers[name].push(handler);
+                    return this;
+                }},
+                off: function(name, handler) {{
+                    if (!fallbackHandlers[name]) {{
+                        return this;
+                    }}
+                    if (!handler) {{
+                        fallbackHandlers[name] = [];
+                        return this;
+                    }}
+                    fallbackHandlers[name] = fallbackHandlers[name].filter(function(item) {{ return item !== handler; }});
+                    return this;
+                }},
+                removeLayer: function() {{ return this; }},
+                addLayer: function() {{ return this; }},
+            }};
+
+            window.setMapSource = function(mapName) {{
+                if (!mapSources[mapName]) {{
+                    return;
+                }}
+                fallbackState.mapName = mapName;
+                currentMapName = mapName;
+                renderFallback();
+                if (window.scheduleOfflineCacheRequest) {{
+                    window.scheduleOfflineCacheRequest();
+                }}
+            }};
+
+            window.setAddWaypointMode = function(enabled) {{
+                addWaypointMode = Boolean(enabled);
+                mapEl.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : 'default');
+            }};
+
+            window.setHomePickMode = function(enabled) {{
+                homePickMode = Boolean(enabled);
+                mapEl.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : 'default');
+            }};
+
+            window.clearMeasure = function() {{
+                measureMode = false;
+                fallbackState.overlay.measureMode = false;
+                btnMeasure.classList.remove('active');
+                setMeasureInfo('--');
+            }};
+
+            window.fitMissionRoute = function() {{
+                const points = [];
+                (fallbackState.waypoints || []).forEach(function(wp) {{
+                    const lat = Number(wp.lat);
+                    const lon = Number(wp.lon);
+                    if (Number.isFinite(lat) && Number.isFinite(lon)) {{
+                        points.push({{ lat: lat, lng: lon }});
+                    }}
+                }});
+                if (points.length === 0) {{
+                    setMapStatus('当前没有任务航点可全览', 'warning');
+                    return;
+                }}
+                const avgLat = points.reduce(function(sum, point) {{ return sum + point.lat; }}, 0) / points.length;
+                const avgLng = points.reduce(function(sum, point) {{ return sum + point.lng; }}, 0) / points.length;
+                window.map.setView({{ lat: avgLat, lng: avgLng }}, fallbackState.zoom);
+            }};
+
+            window.locateAircraft = function() {{
+                if (fallbackState.overlay.vehicle) {{
+                    window.map.panTo(fallbackState.overlay.vehicle);
+                    return;
+                }}
+                setMapStatus('暂无飞机位置可定位', 'warning');
+            }};
+
+            window.applyOverlayState = function(partialState) {{
+                if (!partialState || typeof partialState !== 'object') {{
+                    return;
+                }}
+                if (Object.prototype.hasOwnProperty.call(partialState, 'home')) {{
+                    fallbackState.overlay.home = partialState.home;
+                }}
+                if (Object.prototype.hasOwnProperty.call(partialState, 'vehicle')) {{
+                    fallbackState.overlay.vehicle = partialState.vehicle;
+                }}
+                if (Object.prototype.hasOwnProperty.call(partialState, 'measureMode')) {{
+                    measureMode = Boolean(partialState.measureMode);
+                    fallbackState.overlay.measureMode = measureMode;
+                    btnMeasure.classList.toggle('active', measureMode);
+                }}
+                if (Object.prototype.hasOwnProperty.call(partialState, 'followAircraft')) {{
+                    followAircraft = Boolean(partialState.followAircraft);
+                    fallbackState.overlay.followAircraft = followAircraft;
+                    btnFollowAircraft.classList.toggle('active', followAircraft);
+                }}
+                if (followAircraft && fallbackState.overlay.vehicle) {{
+                    const vehiclePos = normalizeLatLng(fallbackState.overlay.vehicle);
+                    if (vehiclePos) {{
+                        fallbackState.center = vehiclePos;
+                    }}
+                }}
+                renderFallback();
+            }};
+
+            window.setHomePosition = function(home) {{
+                window.applyOverlayState({{ home: home }});
+            }};
+
+            window.setVehiclePosition = function(vehicle) {{
+                window.applyOverlayState({{ vehicle: vehicle }});
+            }};
+
+            window.clearVehiclePosition = function() {{
+                window.applyOverlayState({{ vehicle: null }});
+            }};
+
+            window.updateAutoRoute = function(routeItems, homeWp) {{
+                fallbackState.autoRoute = Array.isArray(routeItems) ? routeItems.slice() : [];
+                if (homeWp) {{
+                    fallbackState.overlay.home = homeWp;
+                }}
+                renderFallback();
+            }};
+
+            window.updateWaypoints = function(waypoints) {{
+                fallbackState.waypoints = Array.isArray(waypoints) ? waypoints.slice() : [];
+                renderFallback();
+            }};
+
+            window.syncWaypointRange = function(startIndex, removeCount, insertItems) {{
+                const start = Math.max(0, Number(startIndex) || 0);
+                const removeTotal = Math.max(0, Number(removeCount) || 0);
+                const items = Array.isArray(insertItems) ? insertItems : [];
+                fallbackState.waypoints.splice(start, removeTotal, ...items);
+                renderFallback();
+            }};
+
+            window.moveWaypointMarker = function(index, waypoint) {{
+                if (!Number.isInteger(index) || index < 0) {{
+                    return;
+                }}
+                fallbackState.waypoints[index] = waypoint;
+                renderFallback();
+            }};
+
+            window.selectWaypointOnMap = function(newIndex) {{
+                selectedWaypointIndex = Number.isInteger(newIndex) ? newIndex : -1;
+                renderFallback();
+            }};
+
+            window.requestOfflineCache = function() {{
+                if (!mapBridge || !mapBridge.cacheVisibleRegion || !window.map) {{
+                    window.setTimeout(window.requestOfflineCache, 200);
+                    return;
+                }}
+                const bounds = window.map.getBounds();
+                const zoom = window.map.getZoom();
+                const maxIndex = Math.pow(2, zoom) - 1;
+                function lon2tile(lon, z) {{
+                    return Math.floor((lon + 180.0) / 360.0 * Math.pow(2, z));
+                }}
+                function lat2tile(lat, z) {{
+                    const rad = lat * Math.PI / 180.0;
+                    return Math.floor((1.0 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2.0 * Math.pow(2, z));
+                }}
+                let xMin = lon2tile(bounds.getWest(), zoom) - 1;
+                let xMax = lon2tile(bounds.getEast(), zoom) + 1;
+                let yMin = lat2tile(bounds.getNorth(), zoom) - 1;
+                let yMax = lat2tile(bounds.getSouth(), zoom) + 1;
+                xMin = Math.max(0, Math.min(maxIndex, xMin));
+                xMax = Math.max(0, Math.min(maxIndex, xMax));
+                yMin = Math.max(0, Math.min(maxIndex, yMin));
+                yMax = Math.max(0, Math.min(maxIndex, yMax));
+                const requestKey = [fallbackState.mapName || Object.keys(mapSources)[0], zoom, xMin, xMax, yMin, yMax].join(':');
+                if (requestKey === lastCacheRequestKey) {{
+                    return;
+                }}
+                lastCacheRequestKey = requestKey;
+                mapBridge.cacheVisibleRegion(JSON.stringify({{
+                    map_name: fallbackState.mapName || Object.keys(mapSources)[0],
+                    zoom: zoom,
+                    x_min: xMin,
+                    x_max: xMax,
+                    y_min: yMin,
+                    y_max: yMax,
+                }}));
+            }};
+
+            window.scheduleOfflineCacheRequest = function() {{
+                if (cacheRequestTimer) {{
+                    window.clearTimeout(cacheRequestTimer);
+                }}
+                cacheRequestTimer = window.setTimeout(function() {{
+                    cacheRequestTimer = null;
+                    if (window.requestOfflineCache) {{
+                        window.requestOfflineCache();
+                    }}
+                }}, 180);
+            }};
+
+            bindBridgeFallback();
+            renderFallback();
+            setCoordDisplay(null);
+            setMeasureInfo('--');
+            window.mapReady = true;
+            setMapStatus('离线地图模式已启用：已从本地缓存加载底图。', 'warning');
+            window.setTimeout(function() {{
+                if (window.requestOfflineCache) {{
+                    window.requestOfflineCache();
+                }}
+            }}, 120);
+        }};
 
         window.startGcsMap = function() {{
             if (window._gcsMapStarted || typeof L === 'undefined') {{
@@ -1218,7 +1970,7 @@ class MapController(QObject):
             if (!currentDemLayer || !latlng) {{
                 return null;
             }}
-            const demZoom = Number.isFinite(Number(currentDemLayer._tileZoom))
+            const demZoom = currentDemLayer && Number.isFinite(Number(currentDemLayer._tileZoom))
                 ? Number(currentDemLayer._tileZoom)
                 : Math.min(Number(window.map.getZoom()), DEM_MAX_NATIVE_ZOOM);
             const point = window.map.project(latlng, demZoom);
@@ -1272,7 +2024,7 @@ class MapController(QObject):
             if (!mapBridge || typeof mapBridge.getDemElevation !== 'function') {{
                 return;
             }}
-            const demZoom = Number.isFinite(Number(currentDemLayer && currentDemLayer._tileZoom))
+            const demZoom = currentDemLayer && Number.isFinite(Number(currentDemLayer._tileZoom))
                 ? Number(currentDemLayer._tileZoom)
                 : Math.min(Number(window.map.getZoom()), DEM_MAX_NATIVE_ZOOM);
             mapBridge.getDemElevation(Number(latlng.lat), Number(latlng.lng), demZoom, function(value) {{
@@ -1567,7 +2319,7 @@ class MapController(QObject):
                 }}
 
                 if (mapBridge && typeof mapBridge.getDemElevation === 'function') {{
-                    const demZoom = Number.isFinite(Number(currentDemLayer && currentDemLayer._tileZoom))
+                    const demZoom = currentDemLayer && Number.isFinite(Number(currentDemLayer._tileZoom))
                         ? Number(currentDemLayer._tileZoom)
                         : Math.min(Number(window.map.getZoom()), DEM_MAX_NATIVE_ZOOM);
                     mapBridge.getDemElevation(pickedLat, pickedLon, demZoom, function(value) {{
