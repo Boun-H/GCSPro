@@ -59,6 +59,16 @@ class MapControllerOfflineTests(unittest.TestCase):
         html = controller._build_html()
 
         self.assertIn("window.startOfflineMapFallback = function()", html)
+        self.assertIn("window._gcsForceOffline =", html)
+        self.assertIn("mapEl.addEventListener('wheel'", html)
+        self.assertIn("mapEl.addEventListener('mousedown'", html)
+        self.assertIn("btnOfflineDownload", html)
+        self.assertIn("offlineDownloadPanel", html)
+        self.assertIn("offlineDownloadProgressFill", html)
+        self.assertIn("offlineCacheCoverage", html)
+        self.assertIn("queueOfflineMapDownload", html)
+        self.assertIn("window.updateOfflineCacheProgress", html)
+        self.assertIn("window.updateOfflineCacheCoverage", html)
         self.assertIn("离线地图模式已启用", html)
 
 

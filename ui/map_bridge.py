@@ -20,6 +20,7 @@ class MapBridge(QObject):
     measure_mode_signal = pyqtSignal(bool)
     follow_mode_signal = pyqtSignal(bool)
     cache_visible_region_signal = pyqtSignal(dict)
+    offline_cache_summary_request_signal = pyqtSignal(str)
     home_point_signal = pyqtSignal(float, float, float)
     home_pick_from_map_signal = pyqtSignal(float, float)
     insert_waypoint_after_signal = pyqtSignal(int)
@@ -128,6 +129,10 @@ class MapBridge(QObject):
         decoded = self._decode_payload(payload)
         if decoded is not None:
             self.cache_visible_region_signal.emit(decoded)
+
+    @pyqtSlot(str)
+    def requestOfflineCacheSummary(self, map_name):
+        self.offline_cache_summary_request_signal.emit(str(map_name or ""))
 
     @pyqtSlot(float, float, float)
     def setHomePoint(self, lat, lon, alt):

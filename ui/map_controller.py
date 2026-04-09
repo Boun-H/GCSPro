@@ -1,6 +1,7 @@
 import json
 import math
 import mimetypes
+import os
 import shutil
 import threading
 from array import array
@@ -8,7 +9,7 @@ from pathlib import Path
 from urllib.error import URLError, HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
-from PyQt6.QtCore import QBuffer, QObject, QTimer
+from PyQt6.QtCore import QBuffer, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWebEngineCore import QWebEngineUrlRequestJob, QWebEngineUrlSchemeHandler
 from core.constants import DEFAULT_LAT, DEFAULT_LON, DEFAULT_ZOOM, MAP_SOURCES
@@ -113,6 +114,9 @@ MAP_CACHE_DIR_NAMES = {
 
 
 class MapController(QObject):
+    offline_cache_progress_signal = pyqtSignal(dict)
+    offline_cache_summary_signal = pyqtSignal(dict)
+
     def __init__(self, web_view, map_bridge, parent=None):
         super().__init__(parent)
         OFFLINE_TILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -147,9 +151,12 @@ class MapController(QObject):
         self._last_overlay_payload = None
         self._map_init_retries = 0
         self._tile_handler = TileSchemeHandler(OFFLINE_CACHE_DIR, parent=self)
+        self.offline_cache_progress_signal.connect(self._push_offline_cache_progress)
+        self.offline_cache_summary_signal.connect(self._push_offline_cache_summary)
         self.web_view.page().profile().installUrlSchemeHandler(b"gcstile", self._tile_handler)
         self.web_view.loadFinished.connect(self._on_load_finished)
         self.map_bridge.cache_visible_region_signal.connect(self.cache_visible_region)
+        self.map_bridge.offline_cache_summary_request_signal.connect(self.request_offline_cache_summary)
 
     def initialize(self, map_name: str, center=None, zoom=None):
         self.current_map = map_name
@@ -166,6 +173,7 @@ class MapController(QObject):
             self.web_view.page().runJavaScript(
                 f"window.setMapSource({json.dumps(map_name, ensure_ascii=False)});"
             )
+            self.request_offline_cache_summary(map_name)
 
     def set_center(self, lat: float, lon: float):
         self.current_center = [lat, lon]
@@ -423,6 +431,7 @@ class MapController(QObject):
                 self.web_view.page().runJavaScript(
                     "if (window.requestOfflineCache) window.requestOfflineCache();"
                 )
+                self.request_offline_cache_summary(self._pending_map_source)
             elif self._map_init_retries < 20:
                 self._map_init_retries += 1
                 QTimer.singleShot(200, self._poll_map_ready)
@@ -470,12 +479,30 @@ class MapController(QObject):
             x_max = min(x_max, x_min + max_span)
             y_max = min(y_max, y_min + max_span)
 
+        total_tiles = (x_max - x_min + 1) * (y_max - y_min + 1)
         self.current_zoom = zoom
         job_key = (map_name, zoom, x_min, x_max, y_min, y_max)
         with self._cache_jobs_lock:
             if job_key in self._cache_jobs:
+                self._emit_offline_cache_progress(
+                    map_name,
+                    zoom,
+                    total_tiles,
+                    total_tiles,
+                    "duplicate",
+                    f"{map_name} Z{zoom} 的同一区域已在后台队列中。",
+                )
                 return
             self._cache_jobs.add(job_key)
+
+        self._emit_offline_cache_progress(
+            map_name,
+            zoom,
+            0,
+            total_tiles,
+            "queued",
+            f"已加入后台下载：{map_name} Z{zoom}（共 {total_tiles} 张瓦片）",
+        )
 
         worker = threading.Thread(
             target=self._download_offline_region,
@@ -487,6 +514,10 @@ class MapController(QObject):
 
     def _download_offline_region(self, job_key):
         map_name, zoom, x_min, x_max, y_min, y_max = job_key
+        total = (x_max - x_min + 1) * (y_max - y_min + 1)
+        downloaded = 0
+        new_tiles = 0
+        reused_tiles = 0
         try:
             OFFLINE_TILE_DIR.mkdir(parents=True, exist_ok=True)
             OFFLINE_DEM_DIR.mkdir(parents=True, exist_ok=True)
@@ -494,16 +525,29 @@ class MapController(QObject):
             dem_zoom = min(int(zoom), 15)
             dem_scale = 1 << max(0, int(zoom) - dem_zoom)
             requested_dem_tiles = set()
-
-            total = (x_max - x_min + 1) * (y_max - y_min + 1)
-            downloaded = 0
             map_dir_name = self._map_cache_dir_name(map_name)
+            progress_step = max(1, total // 8)
+
+            self._emit_offline_cache_progress(
+                map_name,
+                zoom,
+                0,
+                total,
+                "running",
+                f"开始缓存 {map_name} Z{zoom}…",
+            )
+
             for x in range(x_min, x_max + 1):
                 for y in range(y_min, y_max + 1):
                     tile_url = tile_tpl.format(x=x, y=y, z=zoom)
                     tile_path = OFFLINE_TILE_DIR / map_dir_name / str(zoom) / str(x) / f"{y}.png"
 
-                    self._download_if_missing(tile_url, tile_path)
+                    tile_state = self._download_if_missing(tile_url, tile_path)
+                    if tile_state == "downloaded":
+                        new_tiles += 1
+                    elif tile_state == "cached":
+                        reused_tiles += 1
+
                     dem_x = x // dem_scale
                     dem_y = y // dem_scale
                     dem_key = (dem_zoom, dem_x, dem_y)
@@ -516,6 +560,17 @@ class MapController(QObject):
                             dem_y,
                         )
                     downloaded += 1
+                    if downloaded == 1 or downloaded == total or (downloaded % progress_step) == 0:
+                        self._emit_offline_cache_progress(
+                            map_name,
+                            zoom,
+                            downloaded,
+                            total,
+                            "running",
+                            f"正在缓存 {map_name} Z{zoom}：{downloaded}/{total}",
+                            new_tiles=new_tiles,
+                            reused_tiles=reused_tiles,
+                        )
 
             logger.info(
                 "Offline cache ready: source=%s z=%s x=[%s,%s] y=[%s,%s] tiles=%s",
@@ -527,8 +582,29 @@ class MapController(QObject):
                 y_max,
                 downloaded,
             )
+            self._emit_offline_cache_progress(
+                map_name,
+                zoom,
+                total,
+                total,
+                "done",
+                f"缓存完成：{map_name} Z{zoom}，新增 {new_tiles} 张，复用 {reused_tiles} 张",
+                new_tiles=new_tiles,
+                reused_tiles=reused_tiles,
+            )
+            self.request_offline_cache_summary(map_name)
         except Exception as exc:
             logger.warning("Offline cache download failed: %s", exc)
+            self._emit_offline_cache_progress(
+                map_name,
+                zoom,
+                downloaded,
+                total,
+                "error",
+                f"缓存失败：{map_name} Z{zoom}（{exc}）",
+                new_tiles=new_tiles,
+                reused_tiles=reused_tiles,
+            )
         finally:
             with self._cache_jobs_lock:
                 self._cache_jobs.discard(job_key)
@@ -555,9 +631,9 @@ class MapController(QObject):
             logger.debug("DEM conversion failed for tile z=%s x=%s y=%s: %s", z, x, y, exc)
 
     @staticmethod
-    def _download_if_missing(url: str, target: Path):
+    def _download_if_missing(url: str, target: Path) -> str:
         if target.exists() and target.stat().st_size > 0:
-            return
+            return "cached"
         target.parent.mkdir(parents=True, exist_ok=True)
         req = Request(url, headers={"User-Agent": "GCSPro/1.0"})
         try:
@@ -565,8 +641,10 @@ class MapController(QObject):
                 data = resp.read()
                 if data:
                     target.write_bytes(data)
+                    return "downloaded"
         except (HTTPError, URLError, TimeoutError, OSError):
-            return
+            return "failed"
+        return "failed"
 
     def _convert_terrarium_to_dem(self, terrarium_path: Path):
         try:
@@ -673,7 +751,118 @@ class MapController(QObject):
             return False
         return next(root.rglob("*.png"), None) is not None
 
+    def request_offline_cache_summary(self, map_name: str | None = None):
+        source_name = str(map_name or self.current_map or "")
+        if source_name not in MAP_SOURCES:
+            source_name = self.current_map if self.current_map in MAP_SOURCES else next(iter(MAP_SOURCES), "")
+        if not source_name:
+            return
+        self.offline_cache_summary_signal.emit(self._collect_offline_cache_summary(source_name))
+
+    def _emit_offline_cache_progress(
+        self,
+        map_name: str,
+        zoom: int,
+        current: int,
+        total: int,
+        status: str,
+        message: str,
+        *,
+        new_tiles: int = 0,
+        reused_tiles: int = 0,
+    ):
+        safe_total = max(0, int(total or 0))
+        safe_current = max(0, min(safe_total or max(0, int(current or 0)), int(current or 0)))
+        percent = round((safe_current / safe_total) * 100.0, 1) if safe_total > 0 else 0.0
+        self.offline_cache_progress_signal.emit({
+            "mapName": str(map_name or self.current_map),
+            "zoom": int(zoom or 0),
+            "current": safe_current,
+            "total": safe_total,
+            "percent": percent,
+            "status": str(status or "idle"),
+            "message": str(message or ""),
+            "newTiles": max(0, int(new_tiles or 0)),
+            "reusedTiles": max(0, int(reused_tiles or 0)),
+        })
+
+    def _push_offline_cache_progress(self, payload: dict):
+        if not self._page_ready:
+            return
+        data = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+        self.web_view.page().runJavaScript(
+            f"if (window.updateOfflineCacheProgress) window.updateOfflineCacheProgress({data});"
+        )
+
+    def _push_offline_cache_summary(self, summary: dict):
+        if not self._page_ready:
+            return
+        data = json.dumps(summary or {}, ensure_ascii=False, separators=(",", ":"))
+        self.web_view.page().runJavaScript(
+            f"if (window.updateOfflineCacheCoverage) window.updateOfflineCacheCoverage({data});"
+        )
+
+    def _collect_offline_cache_summary(self, map_name: str) -> dict:
+        dir_name = self._map_cache_dir_name(map_name)
+        root = OFFLINE_TILE_DIR / dir_name
+        summary = {
+            "mapName": map_name,
+            "available": False,
+            "tileCount": 0,
+            "zoomMin": None,
+            "zoomMax": None,
+            "west": None,
+            "east": None,
+            "south": None,
+            "north": None,
+            "message": f"{map_name} 暂无已缓存瓦片，可先下载当前视野。",
+        }
+        if not root.exists():
+            return summary
+
+        tile_count = 0
+        zoom_levels: set[int] = set()
+        west = east = south = north = None
+        for tile_path in root.rglob("*.png"):
+            try:
+                zoom = int(tile_path.parent.parent.name)
+                tile_x = int(tile_path.parent.name)
+                tile_y = int(tile_path.stem)
+            except (TypeError, ValueError):
+                continue
+            tile_count += 1
+            zoom_levels.add(zoom)
+            bounds = self._tile_bounds(zoom, tile_x, tile_y)
+            west = bounds["west"] if west is None else min(west, bounds["west"])
+            east = bounds["east"] if east is None else max(east, bounds["east"])
+            south = bounds["south"] if south is None else min(south, bounds["south"])
+            north = bounds["north"] if north is None else max(north, bounds["north"])
+
+        if tile_count <= 0 or not zoom_levels:
+            return summary
+
+        summary.update({
+            "available": True,
+            "tileCount": tile_count,
+            "zoomMin": min(zoom_levels),
+            "zoomMax": max(zoom_levels),
+            "west": round(float(west), 5) if west is not None else None,
+            "east": round(float(east), 5) if east is not None else None,
+            "south": round(float(south), 5) if south is not None else None,
+            "north": round(float(north), 5) if north is not None else None,
+            "message": (
+                f"{map_name} · {tile_count} 张瓦片 · Z{min(zoom_levels)}-Z{max(zoom_levels)}"
+                + (
+                    f" · 纬 {float(south):.3f}~{float(north):.3f} · 经 {float(west):.3f}~{float(east):.3f}"
+                    if None not in (south, north, west, east)
+                    else ""
+                )
+            ),
+        })
+        return summary
+
     def _build_html(self) -> str:
+        force_offline_bootstrap = str(os.environ.get("GCS_FORCE_OFFLINE_MAP", "")).strip().lower() in {"1", "true", "yes", "on"}
         tile_config = {
             name: {
                 "tiles": source["tiles"],
@@ -933,6 +1122,144 @@ class MapController(QObject):
             height: 18px;
             background: rgba(148, 163, 184, 0.4);
         }}
+        .map-download-panel {{
+            position: absolute;
+            left: 50%;
+            bottom: 52px;
+            transform: translateX(-50%);
+            z-index: 1150;
+            width: min(380px, calc(100vw - 16px));
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(15, 23, 42, 0.96);
+            color: #e5eefc;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            box-shadow: 0 12px 28px rgba(2, 6, 23, 0.42);
+        }}
+        .map-download-panel.open {{
+            display: flex;
+        }}
+        .map-download-title {{
+            font-size: 13px;
+            font-weight: 700;
+            color: #f8fafc;
+        }}
+        .map-download-row {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .map-download-row label {{
+            width: 48px;
+            color: #cbd5e1;
+            font-size: 12px;
+            flex: 0 0 auto;
+        }}
+        .map-download-row select,
+        .map-download-row input {{
+            flex: 1;
+            min-width: 0;
+            height: 30px;
+            border-radius: 7px;
+            border: 1px solid #4b5f79;
+            background: #172233;
+            color: #f8fafc;
+            padding: 0 8px;
+            font-size: 12px;
+        }}
+        .map-download-inline {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+        }}
+        .map-download-inline span {{
+            color: #94a3b8;
+            font-size: 12px;
+        }}
+        .map-download-actions {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 8px;
+        }}
+        .map-download-btn {{
+            min-width: 88px;
+            height: 30px;
+            border: 1px solid #4b5f79;
+            border-radius: 7px;
+            background: #233246;
+            color: #e6f0ff;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 0 10px;
+        }}
+        .map-download-btn.primary {{
+            background: #1d4ed8;
+            border-color: #60a5fa;
+        }}
+        .map-download-hint {{
+            font-size: 12px;
+            color: #94a3b8;
+            line-height: 1.4;
+        }}
+        .map-download-hint.ok {{
+            color: #86efac;
+        }}
+        .map-download-hint.warn {{
+            color: #fdba74;
+        }}
+        .map-download-progress {{
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.62);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+        }}
+        .map-download-progress-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #cbd5e1;
+        }}
+        .map-download-progress-bar {{
+            width: 100%;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(51, 65, 85, 0.92);
+            overflow: hidden;
+        }}
+        .map-download-progress-fill {{
+            width: 0%;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #38bdf8 0%, #22c55e 100%);
+            transition: width 0.18s ease;
+        }}
+        .map-download-progress-fill.warn {{
+            background: linear-gradient(90deg, #f59e0b 0%, #ef4444 100%);
+        }}
+        .map-download-coverage {{
+            font-size: 11px;
+            line-height: 1.45;
+            color: #cbd5e1;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.62);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+        }}
+        .map-download-coverage.ok {{
+            color: #bfdbfe;
+        }}
+        .map-download-coverage.warn {{
+            color: #fdba74;
+        }}
         @media (max-width: 760px) {{
             .leaflet-top.leaflet-right {{
                 margin-top: 208px;
@@ -1036,12 +1363,62 @@ class MapController(QObject):
         <button id="btnLocateAircraft" class="map-toolbar-btn" title="定位飞机"><span class="icon">✈</span><span class="label">定位</span></button>
         <button id="btnMeasure" class="map-toolbar-btn" title="测距"><span class="icon">⟷</span><span class="label">测距</span></button>
         <button id="btnFollowAircraft" class="map-toolbar-btn" title="飞机居中跟随"><span class="icon">◎</span><span class="label">居中</span></button>
+        <button id="btnOfflineDownload" class="map-toolbar-btn" title="下载离线地图"><span class="icon">⬇</span><span class="label">离线</span></button>
+    </div>
+    <div id="offlineDownloadPanel" class="map-download-panel" aria-hidden="true">
+        <div class="map-download-title">离线地图下载</div>
+        <div class="map-download-row">
+            <label for="offlineMapSource">底图</label>
+            <select id="offlineMapSource"></select>
+        </div>
+        <div class="map-download-row">
+            <label for="offlineMinZoom">层级</label>
+            <div class="map-download-inline">
+                <input id="offlineMinZoom" type="number" min="4" max="21" value="5" />
+                <span>至</span>
+                <input id="offlineMaxZoom" type="number" min="4" max="21" value="8" />
+            </div>
+        </div>
+        <div class="map-download-row">
+            <label for="offlineTilePadding">视野</label>
+            <select id="offlineTilePadding">
+                <option value="1">当前视野</option>
+                <option value="2" selected>视野 + 1 圈</option>
+                <option value="4">更大范围</option>
+            </select>
+        </div>
+        <div class="map-download-row">
+            <label for="offlineCenterRadius">中心</label>
+            <select id="offlineCenterRadius">
+                <option value="1">3 × 3 瓦片</option>
+                <option value="2" selected>5 × 5 瓦片</option>
+                <option value="3">7 × 7 瓦片</option>
+            </select>
+        </div>
+        <div class="map-download-actions">
+            <button id="btnQueueVisibleDownload" class="map-download-btn primary">下载当前视野</button>
+            <button id="btnQueueCenterDownload" class="map-download-btn">下载中心区域</button>
+            <button id="btnCloseOfflineDownload" class="map-download-btn">关闭</button>
+        </div>
+        <div class="map-download-progress">
+            <div class="map-download-progress-head">
+                <span>下载进度</span>
+                <span id="offlineDownloadProgressValue">--</span>
+            </div>
+            <div class="map-download-progress-bar">
+                <div id="offlineDownloadProgressFill" class="map-download-progress-fill"></div>
+            </div>
+            <div id="offlineDownloadProgressText" class="map-download-hint">等待下载任务。</div>
+        </div>
+        <div id="offlineCacheCoverage" class="map-download-coverage">已缓存范围：正在读取…</div>
+        <div id="offlineDownloadHint" class="map-download-hint">选择缩放范围后即可缓存离线地图。</div>
     </div>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script>
         window.mapReady = false;
         window._gcsMapStarted = false;
         window._gcsMapBootstrapError = '';
+        window._gcsForceOffline = {json.dumps(force_offline_bootstrap)};
         window._gcsLeafletAssets = {{
             css: [
                 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
@@ -1085,6 +1462,11 @@ class MapController(QObject):
         }}
 
         function loadLeafletScript(index) {{
+            if (window._gcsForceOffline) {{
+                setMapStatus('正在以离线缓存模式启动地图…', 'warning');
+                window.startOfflineMapFallback();
+                return;
+            }}
             if (typeof L !== 'undefined') {{
                 window.startGcsMap();
                 return;
@@ -1161,6 +1543,271 @@ class MapController(QObject):
             measureMode: false,
             followAircraft: false,
         }};
+        const offlineDownloadPanel = document.getElementById('offlineDownloadPanel');
+        const btnOfflineDownload = document.getElementById('btnOfflineDownload');
+        const offlineMapSource = document.getElementById('offlineMapSource');
+        const offlineMinZoom = document.getElementById('offlineMinZoom');
+        const offlineMaxZoom = document.getElementById('offlineMaxZoom');
+        const offlineTilePadding = document.getElementById('offlineTilePadding');
+        const offlineCenterRadius = document.getElementById('offlineCenterRadius');
+        const btnQueueVisibleDownload = document.getElementById('btnQueueVisibleDownload');
+        const btnQueueCenterDownload = document.getElementById('btnQueueCenterDownload');
+        const btnCloseOfflineDownload = document.getElementById('btnCloseOfflineDownload');
+        const offlineDownloadHint = document.getElementById('offlineDownloadHint');
+        const offlineDownloadProgressFill = document.getElementById('offlineDownloadProgressFill');
+        const offlineDownloadProgressValue = document.getElementById('offlineDownloadProgressValue');
+        const offlineDownloadProgressText = document.getElementById('offlineDownloadProgressText');
+        const offlineCacheCoverage = document.getElementById('offlineCacheCoverage');
+
+        function setOfflineDownloadHint(message, tone) {{
+            if (!offlineDownloadHint) {{
+                return;
+            }}
+            offlineDownloadHint.textContent = message || '选择范围后即可缓存离线地图。';
+            offlineDownloadHint.className = 'map-download-hint ' + (tone || '');
+        }}
+
+        function updateOfflineCacheProgress(payload) {{
+            const info = payload && typeof payload === 'object' ? payload : {{}};
+            const total = Math.max(0, Number(info.total || 0));
+            const current = Math.max(0, Number(info.current || 0));
+            const percent = total > 0
+                ? Math.max(0, Math.min(100, Number(info.percent || ((current / total) * 100.0))))
+                : 0;
+            if (offlineDownloadProgressFill) {{
+                offlineDownloadProgressFill.style.width = String(percent.toFixed(1)) + '%';
+                offlineDownloadProgressFill.classList.toggle('warn', info.status === 'error');
+            }}
+            if (offlineDownloadProgressValue) {{
+                offlineDownloadProgressValue.textContent = total > 0 ? String(Math.round(percent)) + '%' : '--';
+            }}
+            if (offlineDownloadProgressText) {{
+                const details = [];
+                const newTiles = Number(info.newTiles || 0);
+                const reusedTiles = Number(info.reusedTiles || 0);
+                if (total > 0) {{
+                    details.push(String(current) + '/' + String(total));
+                }}
+                if (newTiles > 0) {{
+                    details.push('新增 ' + String(newTiles));
+                }}
+                if (reusedTiles > 0) {{
+                    details.push('复用 ' + String(reusedTiles));
+                }}
+                offlineDownloadProgressText.textContent = info.message
+                    ? String(info.message) + (details.length ? '（' + details.join('，') + '）' : '')
+                    : '等待下载任务。';
+                offlineDownloadProgressText.className = 'map-download-hint ' + (info.status === 'error' ? 'warn' : (info.status === 'done' ? 'ok' : ''));
+            }}
+        }}
+        window.updateOfflineCacheProgress = updateOfflineCacheProgress;
+
+        function updateOfflineCacheCoverage(summary) {{
+            const info = summary && typeof summary === 'object' ? summary : {{}};
+            const mapName = info.mapName || (offlineMapSource && offlineMapSource.value) || currentMapName || '';
+            if (mapName && mapSources[mapName]) {{
+                mapSources[mapName].offlineAvailable = Boolean(info.available);
+            }}
+            if (offlineCacheCoverage) {{
+                offlineCacheCoverage.textContent = info.message
+                    ? '已缓存范围：' + String(info.message)
+                    : '已缓存范围：暂无统计数据。';
+                offlineCacheCoverage.className = 'map-download-coverage ' + (info.available ? 'ok' : 'warn');
+            }}
+            if (offlineMapSource) {{
+                const selected = offlineMapSource.value || mapName;
+                updateOfflineDownloadSourceOptions();
+                if (selected && mapSources[selected]) {{
+                    offlineMapSource.value = selected;
+                }}
+            }}
+        }}
+        window.updateOfflineCacheCoverage = updateOfflineCacheCoverage;
+
+        function requestOfflineCacheCoverage(mapName) {{
+            const targetName = mapName || (offlineMapSource && offlineMapSource.value) || currentMapName || Object.keys(mapSources)[0];
+            if (offlineCacheCoverage) {{
+                offlineCacheCoverage.textContent = '已缓存范围：正在读取 ' + String(targetName) + '…';
+                offlineCacheCoverage.className = 'map-download-coverage';
+            }}
+            if (mapBridge && typeof mapBridge.requestOfflineCacheSummary === 'function') {{
+                mapBridge.requestOfflineCacheSummary(String(targetName));
+                return;
+            }}
+            if (offlineCacheCoverage) {{
+                offlineCacheCoverage.textContent = '已缓存范围：地图桥接尚未就绪，稍后会自动刷新。';
+                offlineCacheCoverage.className = 'map-download-coverage warn';
+            }}
+        }}
+
+        function updateOfflineDownloadSourceOptions() {{
+            if (!offlineMapSource) {{
+                return;
+            }}
+            const names = Object.keys(mapSources);
+            offlineMapSource.innerHTML = names.map(function(name) {{
+                const cached = mapSources[name] && mapSources[name].offlineAvailable ? '（已缓存）' : '';
+                const selected = name === currentMapName ? ' selected' : '';
+                return '<option value="' + name + '"' + selected + '>' + name + cached + '</option>';
+            }}).join('');
+        }}
+
+        function syncOfflineDownloadDefaults() {{
+            const fallbackZoom = Number({self.current_zoom});
+            const baseZoom = window.map && typeof window.map.getZoom === 'function'
+                ? Number(window.map.getZoom())
+                : fallbackZoom;
+            const minZ = Math.max(4, Math.min(21, Math.floor(baseZoom)));
+            const maxZ = Math.max(minZ, Math.min(21, minZ + 2));
+            if (offlineMinZoom) {{
+                offlineMinZoom.value = String(minZ);
+            }}
+            if (offlineMaxZoom) {{
+                offlineMaxZoom.value = String(maxZ);
+            }}
+            if (offlineMapSource) {{
+                offlineMapSource.value = currentMapName || Object.keys(mapSources)[0];
+            }}
+        }}
+
+        function toggleOfflineDownloadPanel(forceOpen) {{
+            if (!offlineDownloadPanel) {{
+                return;
+            }}
+            const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !offlineDownloadPanel.classList.contains('open');
+            offlineDownloadPanel.classList.toggle('open', nextOpen);
+            offlineDownloadPanel.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
+            if (btnOfflineDownload) {{
+                btnOfflineDownload.classList.toggle('active', nextOpen);
+            }}
+            if (nextOpen) {{
+                updateOfflineDownloadSourceOptions();
+                syncOfflineDownloadDefaults();
+                setOfflineDownloadHint('选择缩放范围后即可缓存离线地图。', '');
+                updateOfflineCacheProgress({{ status: 'idle', current: 0, total: 0, message: '等待下载任务。' }});
+                requestOfflineCacheCoverage(offlineMapSource ? offlineMapSource.value : currentMapName);
+            }}
+        }}
+
+        function lon2tileIndex(lon, z) {{
+            return Math.floor((Number(lon) + 180.0) / 360.0 * Math.pow(2, z));
+        }}
+
+        function lat2tileIndex(lat, z) {{
+            const rad = Number(lat) * Math.PI / 180.0;
+            return Math.floor((1.0 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2.0 * Math.pow(2, z));
+        }}
+
+        function clampTileRange(xMin, xMax, yMin, yMax, zoom) {{
+            const maxIndex = Math.pow(2, zoom) - 1;
+            return {{
+                x_min: Math.max(0, Math.min(maxIndex, xMin)),
+                x_max: Math.max(0, Math.min(maxIndex, xMax)),
+                y_min: Math.max(0, Math.min(maxIndex, yMin)),
+                y_max: Math.max(0, Math.min(maxIndex, yMax)),
+            }};
+        }}
+
+        function buildVisibleDownloadRange(zoom, padding) {{
+            const bounds = window.map.getBounds();
+            return clampTileRange(
+                lon2tileIndex(bounds.getWest(), zoom) - padding,
+                lon2tileIndex(bounds.getEast(), zoom) + padding,
+                lat2tileIndex(bounds.getNorth(), zoom) - padding,
+                lat2tileIndex(bounds.getSouth(), zoom) + padding,
+                zoom
+            );
+        }}
+
+        function buildCenterDownloadRange(zoom, radius) {{
+            const bounds = window.map.getBounds();
+            const centerLat = (Number(bounds.getNorth()) + Number(bounds.getSouth())) / 2.0;
+            const centerLon = (Number(bounds.getWest()) + Number(bounds.getEast())) / 2.0;
+            const centerX = lon2tileIndex(centerLon, zoom);
+            const centerY = lat2tileIndex(centerLat, zoom);
+            return clampTileRange(centerX - radius, centerX + radius, centerY - radius, centerY + radius, zoom);
+        }}
+
+        function queueOfflineMapDownload(mode) {{
+            if (!mapBridge || typeof mapBridge.cacheVisibleRegion !== 'function' || !window.map) {{
+                setOfflineDownloadHint('地图下载接口尚未就绪，请稍后重试。', 'warn');
+                return;
+            }}
+            const mapName = offlineMapSource && mapSources[offlineMapSource.value]
+                ? offlineMapSource.value
+                : (currentMapName || Object.keys(mapSources)[0]);
+            let minZoom = Math.max(4, Math.min(21, parseInt(offlineMinZoom && offlineMinZoom.value ? offlineMinZoom.value : String(window.map.getZoom()), 10) || 4));
+            let maxZoom = Math.max(4, Math.min(21, parseInt(offlineMaxZoom && offlineMaxZoom.value ? offlineMaxZoom.value : String(minZoom), 10) || minZoom));
+            if (minZoom > maxZoom) {{
+                const temp = minZoom;
+                minZoom = maxZoom;
+                maxZoom = temp;
+                if (offlineMinZoom) {{
+                    offlineMinZoom.value = String(minZoom);
+                }}
+                if (offlineMaxZoom) {{
+                    offlineMaxZoom.value = String(maxZoom);
+                }}
+            }}
+            const padding = Math.max(1, Math.min(6, parseInt(offlineTilePadding && offlineTilePadding.value ? offlineTilePadding.value : '2', 10) || 2));
+            const centerRadius = Math.max(1, Math.min(6, parseInt(offlineCenterRadius && offlineCenterRadius.value ? offlineCenterRadius.value : '2', 10) || 2));
+            let queuedJobs = 0;
+            for (let zoom = minZoom; zoom <= maxZoom; zoom += 1) {{
+                const range = mode === 'center'
+                    ? buildCenterDownloadRange(zoom, centerRadius)
+                    : buildVisibleDownloadRange(zoom, padding);
+                mapBridge.cacheVisibleRegion(JSON.stringify({{
+                    map_name: mapName,
+                    zoom: zoom,
+                    x_min: range.x_min,
+                    x_max: range.x_max,
+                    y_min: range.y_min,
+                    y_max: range.y_max,
+                }}));
+                queuedJobs += 1;
+            }}
+            const modeLabel = mode === 'center' ? '中心区域' : '当前视野';
+            setOfflineDownloadHint('已加入离线下载队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom + '（' + queuedJobs + ' 级）', 'ok');
+            updateOfflineCacheProgress({{ status: 'queued', current: 0, total: 0, message: '后台队列已创建，等待开始…' }});
+            setMapStatus('离线地图下载已加入后台队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom, 'warning');
+        }}
+
+        if (btnOfflineDownload) {{
+            btnOfflineDownload.addEventListener('click', function(event) {{
+                event.preventDefault();
+                event.stopPropagation();
+                toggleOfflineDownloadPanel();
+            }});
+        }}
+        if (btnCloseOfflineDownload) {{
+            btnCloseOfflineDownload.addEventListener('click', function() {{
+                toggleOfflineDownloadPanel(false);
+            }});
+        }}
+        if (offlineMapSource) {{
+            offlineMapSource.addEventListener('change', function() {{
+                requestOfflineCacheCoverage(offlineMapSource.value);
+            }});
+        }}
+        if (btnQueueVisibleDownload) {{
+            btnQueueVisibleDownload.addEventListener('click', function() {{
+                queueOfflineMapDownload('visible');
+            }});
+        }}
+        if (btnQueueCenterDownload) {{
+            btnQueueCenterDownload.addEventListener('click', function() {{
+                queueOfflineMapDownload('center');
+            }});
+        }}
+        document.addEventListener('click', function(event) {{
+            if (!offlineDownloadPanel || !btnOfflineDownload || !offlineDownloadPanel.classList.contains('open')) {{
+                return;
+            }}
+            if (offlineDownloadPanel.contains(event.target) || btnOfflineDownload.contains(event.target)) {{
+                return;
+            }}
+            toggleOfflineDownloadPanel(false);
+        }});
 
         function getFallbackMapName(excludedName) {{
             const names = Object.keys(mapSources);
@@ -1222,6 +1869,17 @@ class MapController(QObject):
                 overlay: {{ home: null, vehicle: null, measureMode: false, followAircraft: false }},
             }};
             const fallbackHandlers = {{}};
+            let isDragging = false;
+            let dragStartPoint = null;
+            let dragStartCenter = null;
+
+            function updateOfflineCursor() {{
+                if (isDragging) {{
+                    mapEl.style.cursor = 'grabbing';
+                    return;
+                }}
+                mapEl.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : 'grab');
+            }}
 
             function normalizeLatLng(value) {{
                 if (!value) {{
@@ -1395,6 +2053,11 @@ class MapController(QObject):
                         + '<svg id="offlineFallbackRoutes" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></svg>'
                         + '<div id="offlineFallbackMarkers" style="position:absolute;inset:0;pointer-events:none;"></div>'
                         + '<div id="offlineFallbackBadge" style="position:absolute;right:12px;top:12px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,0.86);border:1px solid rgba(148,163,184,0.35);color:#f8fafc;font-size:12px;box-shadow:0 8px 20px rgba(15,23,42,0.24);">离线地图缓存</div>'
+                        + '<div id="offlineFallbackControls" style="position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:10px;background:rgba(15,23,42,0.86);border:1px solid rgba(148,163,184,0.35);color:#f8fafc;box-shadow:0 8px 20px rgba(15,23,42,0.24);">'
+                        + '<button id="offlineZoomOut" style="width:28px;height:28px;border:none;border-radius:6px;background:#233246;color:#fff;font-size:18px;cursor:pointer;">−</button>'
+                        + '<span id="offlineZoomLabel" style="min-width:42px;text-align:center;font-size:12px;font-weight:700;">Z--</span>'
+                        + '<button id="offlineZoomIn" style="width:28px;height:28px;border:none;border-radius:6px;background:#233246;color:#fff;font-size:18px;cursor:pointer;">+</button>'
+                        + '</div>'
                         + '</div>';
                 }}
 
@@ -1404,11 +2067,15 @@ class MapController(QObject):
                 const routesEl = document.getElementById('offlineFallbackRoutes');
                 const markersEl = document.getElementById('offlineFallbackMarkers');
                 const badgeEl = document.getElementById('offlineFallbackBadge');
+                const zoomLabelEl = document.getElementById('offlineZoomLabel');
                 if (!tilesEl || !routesEl || !markersEl) {{
                     return;
                 }}
                 if (badgeEl) {{
                     badgeEl.textContent = '离线地图 | ' + fallbackState.mapName + ' | Z' + fallbackState.zoom;
+                }}
+                if (zoomLabelEl) {{
+                    zoomLabelEl.textContent = 'Z' + fallbackState.zoom;
                 }}
 
                 const tileSize = 256;
@@ -1521,6 +2188,9 @@ class MapController(QObject):
                                 }}
                             }});
                         }}
+                        if (window.requestOfflineCacheCoverage) {{
+                            window.requestOfflineCacheCoverage(currentMapName);
+                        }}
                     }});
                 }} catch (err) {{
                     bridgeBindingInProgress = false;
@@ -1531,22 +2201,80 @@ class MapController(QObject):
 
             if (!mapEl.dataset.offlineFallbackBound) {{
                 mapEl.dataset.offlineFallbackBound = '1';
+                updateOfflineCursor();
+                mapEl.addEventListener('mousedown', function(event) {{
+                    if (event.button !== 0) {{
+                        return;
+                    }}
+                    isDragging = true;
+                    dragStartPoint = {{ x: Number(event.clientX || 0), y: Number(event.clientY || 0) }};
+                    dragStartCenter = {{ lat: fallbackState.center.lat, lng: fallbackState.center.lng }};
+                    updateOfflineCursor();
+                }});
                 mapEl.addEventListener('mousemove', function(event) {{
+                    if (isDragging && dragStartPoint && dragStartCenter) {{
+                        const dx = Number(event.clientX || 0) - dragStartPoint.x;
+                        const dy = Number(event.clientY || 0) - dragStartPoint.y;
+                        const worldX = lonToWorldX(dragStartCenter.lng, fallbackState.zoom) - dx;
+                        const worldY = latToWorldY(dragStartCenter.lat, fallbackState.zoom) - dy;
+                        fallbackState.center = {{
+                            lat: worldToLat(worldY, fallbackState.zoom),
+                            lng: worldToLon(worldX, fallbackState.zoom),
+                        }};
+                        renderFallback();
+                    }}
                     const latlng = containerEventToLatLng(event);
                     setCoordDisplay(latlng);
                     emitMapEvent('mousemove', {{ latlng: latlng }});
                 }});
                 mapEl.addEventListener('mouseleave', function() {{
+                    if (isDragging) {{
+                        isDragging = false;
+                        dragStartPoint = null;
+                        dragStartCenter = null;
+                        updateOfflineCursor();
+                        emitMapEvent('moveend', {{ latlng: fallbackState.center }});
+                        if (window.scheduleOfflineCacheRequest) {{
+                            window.scheduleOfflineCacheRequest();
+                        }}
+                    }}
                     setCoordDisplay(null);
                     emitMapEvent('mouseout', {{}});
                 }});
+                window.addEventListener('mouseup', function() {{
+                    if (!isDragging) {{
+                        return;
+                    }}
+                    isDragging = false;
+                    dragStartPoint = null;
+                    dragStartCenter = null;
+                    updateOfflineCursor();
+                    emitMapEvent('moveend', {{ latlng: fallbackState.center }});
+                    if (window.scheduleOfflineCacheRequest) {{
+                        window.scheduleOfflineCacheRequest();
+                    }}
+                }});
+                mapEl.addEventListener('wheel', function(event) {{
+                    event.preventDefault();
+                    const delta = Number(event.deltaY || 0);
+                    const nextZoom = Math.max(4, Math.min(21, fallbackState.zoom + (delta < 0 ? 1 : -1)));
+                    if (nextZoom === fallbackState.zoom) {{
+                        return;
+                    }}
+                    fallbackState.zoom = nextZoom;
+                    renderFallback();
+                    emitMapEvent('zoomend', {{ zoom: fallbackState.zoom }});
+                    if (window.scheduleOfflineCacheRequest) {{
+                        window.scheduleOfflineCacheRequest();
+                    }}
+                }}, {{ passive: false }});
                 mapEl.addEventListener('click', function(event) {{
                     const latlng = containerEventToLatLng(event);
                     if (measureMode) {{
                         setMeasureInfo('离线简化模式');
                     }} else if (homePickMode) {{
                         homePickMode = false;
-                        mapEl.style.cursor = addWaypointMode ? 'crosshair' : 'default';
+                        updateOfflineCursor();
                         emitHomePickFallback(latlng);
                     }} else if (addWaypointMode) {{
                         emitAddWaypointAtFallback(latlng);
@@ -1585,6 +2313,26 @@ class MapController(QObject):
                         window.locateAircraft();
                     }}
                 }});
+                const btnOfflineZoomIn = document.getElementById('offlineZoomIn');
+                const btnOfflineZoomOut = document.getElementById('offlineZoomOut');
+                if (btnOfflineZoomIn) {{
+                    btnOfflineZoomIn.addEventListener('click', function() {{
+                        fallbackState.zoom = Math.max(4, Math.min(21, fallbackState.zoom + 1));
+                        renderFallback();
+                        if (window.scheduleOfflineCacheRequest) {{
+                            window.scheduleOfflineCacheRequest();
+                        }}
+                    }});
+                }}
+                if (btnOfflineZoomOut) {{
+                    btnOfflineZoomOut.addEventListener('click', function() {{
+                        fallbackState.zoom = Math.max(4, Math.min(21, fallbackState.zoom - 1));
+                        renderFallback();
+                        if (window.scheduleOfflineCacheRequest) {{
+                            window.scheduleOfflineCacheRequest();
+                        }}
+                    }});
+                }}
             }}
 
             window.map = {{
@@ -1672,6 +2420,13 @@ class MapController(QObject):
                 }}
                 fallbackState.mapName = mapName;
                 currentMapName = mapName;
+                updateOfflineDownloadSourceOptions();
+                if (offlineMapSource) {{
+                    offlineMapSource.value = currentMapName;
+                }}
+                if (window.requestOfflineCacheCoverage) {{
+                    window.requestOfflineCacheCoverage(currentMapName);
+                }}
                 renderFallback();
                 if (window.scheduleOfflineCacheRequest) {{
                     window.scheduleOfflineCacheRequest();
@@ -1680,12 +2435,12 @@ class MapController(QObject):
 
             window.setAddWaypointMode = function(enabled) {{
                 addWaypointMode = Boolean(enabled);
-                mapEl.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : 'default');
+                updateOfflineCursor();
             }};
 
             window.setHomePickMode = function(enabled) {{
                 homePickMode = Boolean(enabled);
-                mapEl.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : 'default');
+                updateOfflineCursor();
             }};
 
             window.clearMeasure = function() {{
@@ -2482,6 +3237,9 @@ class MapController(QObject):
                         }});
                     }}
                     setMapStatus('', '');
+                    if (window.requestOfflineCacheCoverage) {{
+                        window.requestOfflineCacheCoverage(currentMapName);
+                    }}
                 }});
             }} catch (e) {{
                 bridgeBindingInProgress = false;
@@ -2513,11 +3271,21 @@ class MapController(QObject):
                 return;
             }}
             currentMapName = mapName;
+            updateOfflineDownloadSourceOptions();
+            if (offlineMapSource) {{
+                offlineMapSource.value = currentMapName;
+            }}
+            if (window.requestOfflineCacheCoverage) {{
+                window.requestOfflineCacheCoverage(currentMapName);
+            }}
             activeTileFailures = 0;
             activeTileRecovered = false;
+            const preferOfflineTiles = Boolean(window._gcsOfflineFallback || window._gcsForceOffline || (window.navigator && window.navigator.onLine === false));
+            const tileTemplate = (preferOfflineTiles && source.offlineAvailable && source.offline) ? source.offline : source.tiles;
+            const demTemplate = (preferOfflineTiles && source.dem_offline) ? source.dem_offline : source.dem_online;
             const previousTileLayer = currentTileLayer;
             const previousDemLayer = currentDemLayer;
-            currentTileLayer = L.tileLayer(source.tiles, {{
+            currentTileLayer = L.tileLayer(tileTemplate, {{
                 attribution: source.attr,
                 maxZoom: source.maxZoom,
                 updateWhenZooming: false,
@@ -2559,7 +3327,7 @@ class MapController(QObject):
                 }}
             }});
 
-            currentDemLayer = L.tileLayer(source.dem_online, {{
+            currentDemLayer = L.tileLayer(demTemplate, {{
                 maxZoom: source.maxZoom,
                 maxNativeZoom: DEM_MAX_NATIVE_ZOOM,
                 opacity: 0.01,
