@@ -136,12 +136,124 @@
         const offlineCenterRadius = document.getElementById('offlineCenterRadius');
         const btnQueueVisibleDownload = document.getElementById('btnQueueVisibleDownload');
         const btnQueueCenterDownload = document.getElementById('btnQueueCenterDownload');
+        const btnDrawAreaDownload = document.getElementById('btnDrawAreaDownload');
         const btnCloseOfflineDownload = document.getElementById('btnCloseOfflineDownload');
         const offlineDownloadHint = document.getElementById('offlineDownloadHint');
         const offlineDownloadProgressFill = document.getElementById('offlineDownloadProgressFill');
         const offlineDownloadProgressValue = document.getElementById('offlineDownloadProgressValue');
         const offlineDownloadProgressText = document.getElementById('offlineDownloadProgressText');
         const offlineCacheCoverage = document.getElementById('offlineCacheCoverage');
+        const dragInfoEl = document.getElementById('dragInfo');
+        let cachedCoverageLayer = null;
+        let cachedCoverageSummary = null;
+        let offlineDrawSelectionLayer = null;
+        let offlineAreaSelectionEnabled = false;
+        let offlineAreaSelecting = false;
+        let offlineDrawStartLatLng = null;
+        let offlineDrawEndLatLng = null;
+        let offlineDrawSelectionBounds = null;
+
+        function normalizePreviewLatLng(value) {
+            if (!value) {
+                return null;
+            }
+            if (Array.isArray(value) && value.length >= 2) {
+                const lat = Number(value[0]);
+                const lng = Number(value[1]);
+                return Number.isFinite(lat) && Number.isFinite(lng) ? { lat: lat, lng: lng } : null;
+            }
+            const lat = Number(value.lat);
+            const lng = Number(Object.prototype.hasOwnProperty.call(value, 'lng') ? value.lng : value.lon);
+            return Number.isFinite(lat) && Number.isFinite(lng) ? { lat: lat, lng: lng } : null;
+        }
+
+        function computePreviewDistanceMeters(start, end) {
+            const p1 = normalizePreviewLatLng(start);
+            const p2 = normalizePreviewLatLng(end);
+            if (!p1 || !p2) {
+                return NaN;
+            }
+            const R = 6371000.0;
+            const lat1 = p1.lat * Math.PI / 180.0;
+            const lat2 = p2.lat * Math.PI / 180.0;
+            const dLat = (p2.lat - p1.lat) * Math.PI / 180.0;
+            const dLon = (p2.lng - p1.lng) * Math.PI / 180.0;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(1e-12, 1 - a))));
+        }
+
+        function computePreviewBearing(start, end) {
+            const p1 = normalizePreviewLatLng(start);
+            const p2 = normalizePreviewLatLng(end);
+            if (!p1 || !p2) {
+                return NaN;
+            }
+            const lat1 = p1.lat * Math.PI / 180.0;
+            const lat2 = p2.lat * Math.PI / 180.0;
+            const dLon = (p2.lng - p1.lng) * Math.PI / 180.0;
+            const y = Math.sin(dLon) * Math.cos(lat2);
+            const x = Math.cos(lat1) * Math.sin(lat2)
+                - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+            return (Math.atan2(y, x) * 180.0 / Math.PI + 360.0) % 360.0;
+        }
+
+        function formatPreviewDistance(distance) {
+            if (!Number.isFinite(distance)) {
+                return '--';
+            }
+            return distance >= 1000 ? (distance / 1000.0).toFixed(2) + ' km' : distance.toFixed(1) + ' m';
+        }
+
+        function updateDragStatus(label, startLatLng, endLatLng) {
+            if (!dragInfoEl) {
+                return;
+            }
+            const distance = computePreviewDistanceMeters(startLatLng, endLatLng);
+            const bearing = computePreviewBearing(startLatLng, endLatLng);
+            const namePart = label ? String(label) + ' ' : '';
+            dragInfoEl.textContent = Number.isFinite(distance)
+                ? '拖拽: ' + namePart + formatPreviewDistance(distance) + ' / ' + (Number.isFinite(bearing) ? bearing.toFixed(0) + '°' : '--')
+                : '拖拽: --';
+        }
+        window.updateDragStatus = updateDragStatus;
+
+        function applyCachedCoverageOutline(summary) {
+            cachedCoverageSummary = summary && typeof summary === 'object' ? summary : null;
+            if (window.renderFallbackCacheCoverage && window._gcsOfflineFallback) {
+                window.renderFallbackCacheCoverage(cachedCoverageSummary);
+            }
+            if (!window.map || typeof L === 'undefined' || typeof window.map.addLayer !== 'function') {
+                return;
+            }
+            if (cachedCoverageLayer && typeof window.map.removeLayer === 'function') {
+                window.map.removeLayer(cachedCoverageLayer);
+                cachedCoverageLayer = null;
+            }
+            const info = cachedCoverageSummary;
+            if (!info || !info.available) {
+                return;
+            }
+            const west = Number(info.west);
+            const east = Number(info.east);
+            const south = Number(info.south);
+            const north = Number(info.north);
+            if (![west, east, south, north].every(Number.isFinite)) {
+                return;
+            }
+            cachedCoverageLayer = L.rectangle([[south, west], [north, east]], {
+                color: '#38bdf8',
+                weight: 2,
+                opacity: 0.95,
+                fillColor: '#38bdf8',
+                fillOpacity: 0.05,
+                dashArray: '8,6',
+                interactive: false,
+            }).addTo(window.map);
+            if (cachedCoverageLayer && typeof cachedCoverageLayer.bindTooltip === 'function') {
+                cachedCoverageLayer.bindTooltip('已缓存范围', { sticky: true });
+            }
+        }
 
         function setOfflineDownloadHint(message, tone) {
             if (!offlineDownloadHint) {
@@ -169,18 +281,26 @@
                 const details = [];
                 const newTiles = Number(info.newTiles || 0);
                 const reusedTiles = Number(info.reusedTiles || 0);
+                const newElevationTiles = Number(info.newElevationTiles || 0);
+                const reusedElevationTiles = Number(info.reusedElevationTiles || 0);
                 if (total > 0) {
                     details.push(String(current) + '/' + String(total));
                 }
                 if (newTiles > 0) {
-                    details.push('新增 ' + String(newTiles));
+                    details.push('卫星瓦片新增 ' + String(newTiles));
                 }
                 if (reusedTiles > 0) {
-                    details.push('复用 ' + String(reusedTiles));
+                    details.push('卫星瓦片复用 ' + String(reusedTiles));
+                }
+                if (newElevationTiles > 0) {
+                    details.push('DEM高程新增 ' + String(newElevationTiles));
+                }
+                if (reusedElevationTiles > 0) {
+                    details.push('DEM高程复用 ' + String(reusedElevationTiles));
                 }
                 offlineDownloadProgressText.textContent = info.message
                     ? String(info.message) + (details.length ? '（' + details.join('，') + '）' : '')
-                    : '等待下载任务。';
+                    : '等待下载任务（卫星瓦片 / DEM 高程）。';
                 offlineDownloadProgressText.className = 'map-download-hint ' + (info.status === 'error' ? 'warn' : (info.status === 'done' ? 'ok' : ''));
             }
         }
@@ -198,6 +318,7 @@
                     : '已缓存范围：暂无统计数据。';
                 offlineCacheCoverage.className = 'map-download-coverage ' + (info.available ? 'ok' : 'warn');
             }
+            applyCachedCoverageOutline(info);
             if (offlineMapSource) {
                 const selected = offlineMapSource.value || mapName;
                 updateOfflineDownloadSourceOptions();
@@ -259,6 +380,9 @@
                 return;
             }
             const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !offlineDownloadPanel.classList.contains('open');
+            if (!nextOpen) {
+                setOfflineAreaSelectionEnabled(false);
+            }
             offlineDownloadPanel.classList.toggle('open', nextOpen);
             offlineDownloadPanel.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
             if (btnOfflineDownload) {
@@ -268,7 +392,7 @@
                 updateOfflineDownloadSourceOptions();
                 syncOfflineDownloadDefaults();
                 setOfflineDownloadHint('选择缩放范围后即可缓存离线地图。', '');
-                updateOfflineCacheProgress({ status: 'idle', current: 0, total: 0, message: '等待下载任务。' });
+                updateOfflineCacheProgress({ status: 'idle', current: 0, total: 0, message: '等待下载任务（卫星瓦片 / DEM 高程）。' });
                 requestOfflineCacheCoverage(offlineMapSource ? offlineMapSource.value : currentMapName);
             }
         }
@@ -312,6 +436,115 @@
             return clampTileRange(centerX - radius, centerX + radius, centerY - radius, centerY + radius, zoom);
         }
 
+        function resolveDrawSelectionBounds() {
+            if (offlineDrawSelectionBounds
+                && Number.isFinite(Number(offlineDrawSelectionBounds.west))
+                && Number.isFinite(Number(offlineDrawSelectionBounds.east))
+                && Number.isFinite(Number(offlineDrawSelectionBounds.south))
+                && Number.isFinite(Number(offlineDrawSelectionBounds.north))) {
+                return offlineDrawSelectionBounds;
+            }
+            const start = normalizePreviewLatLng(offlineDrawStartLatLng);
+            const end = normalizePreviewLatLng(offlineDrawEndLatLng);
+            if (!start || !end) {
+                return null;
+            }
+            const west = Math.min(Number(start.lng), Number(end.lng));
+            const east = Math.max(Number(start.lng), Number(end.lng));
+            const south = Math.min(Number(start.lat), Number(end.lat));
+            const north = Math.max(Number(start.lat), Number(end.lat));
+            if (![west, east, south, north].every(Number.isFinite)) {
+                return null;
+            }
+            return { west: west, east: east, south: south, north: north };
+        }
+
+        function drawSelectionBoundsToRange(bounds, zoom) {
+            if (!bounds) {
+                return null;
+            }
+            return clampTileRange(
+                lon2tileIndex(bounds.west, zoom),
+                lon2tileIndex(bounds.east, zoom),
+                lat2tileIndex(bounds.north, zoom),
+                lat2tileIndex(bounds.south, zoom),
+                zoom
+            );
+        }
+
+        function renderOfflineAreaSelectionOverlay() {
+            if (!window.map || typeof L === 'undefined' || window._gcsOfflineFallback) {
+                return;
+            }
+            const bounds = resolveDrawSelectionBounds();
+            if (!bounds) {
+                if (offlineDrawSelectionLayer && typeof window.map.removeLayer === 'function') {
+                    window.map.removeLayer(offlineDrawSelectionLayer);
+                    offlineDrawSelectionLayer = null;
+                }
+                return;
+            }
+            const rectBounds = [
+                [Number(bounds.south), Number(bounds.west)],
+                [Number(bounds.north), Number(bounds.east)],
+            ];
+            if (!offlineDrawSelectionLayer) {
+                offlineDrawSelectionLayer = L.rectangle(rectBounds, {
+                    color: '#14b8a6',
+                    weight: 2,
+                    dashArray: '7,5',
+                    fillColor: '#14b8a6',
+                    fillOpacity: 0.10,
+                    interactive: false,
+                }).addTo(window.map);
+                return;
+            }
+            offlineDrawSelectionLayer.setBounds(rectBounds);
+        }
+
+        function updateMapInteractionCursor() {
+            if (!window.map || typeof window.map.getContainer !== 'function' || window._gcsOfflineFallback) {
+                return;
+            }
+            const container = window.map.getContainer();
+            container.style.cursor = offlineAreaSelectionEnabled ? 'crosshair' : (homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : ''));
+        }
+
+        function setOfflineAreaSelectionEnabled(enabled) {
+            offlineAreaSelectionEnabled = Boolean(enabled);
+            if (!offlineAreaSelectionEnabled) {
+                if (window.map && window.map.dragging && typeof window.map.dragging.enable === 'function' && !window._gcsOfflineFallback) {
+                    window.map.dragging.enable();
+                }
+                offlineAreaSelecting = false;
+                offlineDrawStartLatLng = null;
+                offlineDrawEndLatLng = null;
+            } else if (offlineDrawSelectionBounds) {
+                offlineDrawStartLatLng = null;
+                offlineDrawEndLatLng = null;
+            }
+            if (btnDrawAreaDownload) {
+                btnDrawAreaDownload.classList.toggle('active', offlineAreaSelectionEnabled);
+            }
+            if (offlineAreaSelectionEnabled) {
+                setOfflineDownloadHint('请在地图上按住左键拖拽，框选离线下载区域。', '');
+                setMapStatus('框选模式已开启：在地图上拖拽选择下载范围。', 'warning');
+            }
+            updateMapInteractionCursor();
+            if (window._gcsOfflineFallback && typeof window.renderFallbackCacheCoverage === 'function') {
+                window.renderFallbackCacheCoverage(cachedCoverageSummary);
+            } else {
+                renderOfflineAreaSelectionOverlay();
+            }
+        }
+        window.setOfflineAreaSelectionEnabled = setOfflineAreaSelectionEnabled;
+
+        function buildDrawSelectionRange(zoom) {
+            const bounds = resolveDrawSelectionBounds();
+            return drawSelectionBoundsToRange(bounds, zoom);
+        }
+        window.buildDrawSelectionRange = buildDrawSelectionRange;
+
         function queueOfflineMapDownload(mode) {
             if (!mapBridge || typeof mapBridge.cacheVisibleRegion !== 'function' || !window.map) {
                 setOfflineDownloadHint('地图下载接口尚未就绪，请稍后重试。', 'warn');
@@ -337,9 +570,18 @@
             const centerRadius = Math.max(1, Math.min(6, parseInt(offlineCenterRadius && offlineCenterRadius.value ? offlineCenterRadius.value : '2', 10) || 2));
             let queuedJobs = 0;
             for (let zoom = minZoom; zoom <= maxZoom; zoom += 1) {
-                const range = mode === 'center'
-                    ? buildCenterDownloadRange(zoom, centerRadius)
-                    : buildVisibleDownloadRange(zoom, padding);
+                let range = null;
+                if (mode === 'center') {
+                    range = buildCenterDownloadRange(zoom, centerRadius);
+                } else if (mode === 'draw') {
+                    range = buildDrawSelectionRange(zoom);
+                    if (!range) {
+                        setOfflineDownloadHint('请先在地图上框选一个有效区域，再开始下载。', 'warn');
+                        return;
+                    }
+                } else {
+                    range = buildVisibleDownloadRange(zoom, padding);
+                }
                 mapBridge.cacheVisibleRegion(JSON.stringify({
                     map_name: mapName,
                     zoom: zoom,
@@ -350,10 +592,13 @@
                 }));
                 queuedJobs += 1;
             }
-            const modeLabel = mode === 'center' ? '中心区域' : '当前视野';
-            setOfflineDownloadHint('已加入离线下载队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom + '（' + queuedJobs + ' 级）', 'ok');
-            updateOfflineCacheProgress({ status: 'queued', current: 0, total: 0, message: '后台队列已创建，等待开始…' });
-            setMapStatus('离线地图下载已加入后台队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom, 'warning');
+            const modeLabel = mode === 'center' ? '中心区域' : (mode === 'draw' ? '框选区域' : '当前视野');
+            setOfflineDownloadHint('已加入离线下载队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom + '（卫星瓦片 + DEM 高程，' + queuedJobs + ' 级）', 'ok');
+            updateOfflineCacheProgress({ status: 'queued', current: 0, total: 0, message: '后台队列已创建：卫星瓦片 / DEM 高程…' });
+            setMapStatus('离线下载已加入后台队列：' + mapName + ' ' + modeLabel + ' Z' + minZoom + '-Z' + maxZoom + '（卫星瓦片 / DEM 高程）', 'warning');
+            if (mode === 'draw') {
+                setOfflineAreaSelectionEnabled(false);
+            }
         }
 
         if (btnOfflineDownload) {
@@ -381,6 +626,11 @@
         if (btnQueueCenterDownload) {
             btnQueueCenterDownload.addEventListener('click', function() {
                 queueOfflineMapDownload('center');
+            });
+        }
+        if (btnDrawAreaDownload) {
+            btnDrawAreaDownload.addEventListener('click', function() {
+                setOfflineAreaSelectionEnabled(!offlineAreaSelectionEnabled);
             });
         }
         document.addEventListener('click', function(event) {
@@ -450,6 +700,7 @@
                 mapName: currentMapName || Object.keys(mapSources)[0],
                 waypoints: [],
                 autoRoute: [],
+                cacheCoverage: cachedCoverageSummary,
                 overlay: { home: null, vehicle: null, measureMode: false, followAircraft: false },
             };
             const fallbackHandlers = {};
@@ -458,6 +709,10 @@
             let dragStartCenter = null;
 
             function updateOfflineCursor() {
+                if (offlineAreaSelectionEnabled || offlineAreaSelecting) {
+                    mapEl.style.cursor = 'crosshair';
+                    return;
+                }
                 if (isDragging) {
                     mapEl.style.cursor = 'grabbing';
                     return;
@@ -718,6 +973,35 @@
                     routesEl.innerHTML += '<polyline points="' + routePoints.join(' ') + '" fill="none" stroke="#38bdf8" stroke-width="3" opacity="0.92" />';
                 }
 
+                if (fallbackState.cacheCoverage && fallbackState.cacheCoverage.available) {
+                    const west = Number(fallbackState.cacheCoverage.west);
+                    const east = Number(fallbackState.cacheCoverage.east);
+                    const south = Number(fallbackState.cacheCoverage.south);
+                    const north = Number(fallbackState.cacheCoverage.north);
+                    if ([west, east, south, north].every(Number.isFinite)) {
+                        const nw = latLngToContainerPoint({ lat: north, lng: west });
+                        const se = latLngToContainerPoint({ lat: south, lng: east });
+                        const rectX = Math.min(nw.x, se.x);
+                        const rectY = Math.min(nw.y, se.y);
+                        const rectW = Math.max(2, Math.abs(se.x - nw.x));
+                        const rectH = Math.max(2, Math.abs(se.y - nw.y));
+                        routesEl.innerHTML += '<rect id="offlineCacheOutline" x="' + rectX.toFixed(1) + '" y="' + rectY.toFixed(1) + '" width="' + rectW.toFixed(1) + '" height="' + rectH.toFixed(1) + '" fill="rgba(56,189,248,0.05)" stroke="#38bdf8" stroke-width="2" stroke-dasharray="8,6" rx="8" ry="8" />';
+                        routesEl.innerHTML += '<text x="' + (rectX + 8).toFixed(1) + '" y="' + Math.max(16, rectY + 16).toFixed(1) + '" fill="#e0f2fe" font-size="12" font-weight="700">已缓存范围</text>';
+                    }
+                }
+
+                const drawBounds = resolveDrawSelectionBounds();
+                if (drawBounds) {
+                    const drawNw = latLngToContainerPoint({ lat: Number(drawBounds.north), lng: Number(drawBounds.west) });
+                    const drawSe = latLngToContainerPoint({ lat: Number(drawBounds.south), lng: Number(drawBounds.east) });
+                    const drawX = Math.min(drawNw.x, drawSe.x);
+                    const drawY = Math.min(drawNw.y, drawSe.y);
+                    const drawW = Math.max(2, Math.abs(drawSe.x - drawNw.x));
+                    const drawH = Math.max(2, Math.abs(drawSe.y - drawNw.y));
+                    routesEl.innerHTML += '<rect id="offlineDrawSelection" x="' + drawX.toFixed(1) + '" y="' + drawY.toFixed(1) + '" width="' + drawW.toFixed(1) + '" height="' + drawH.toFixed(1) + '" fill="rgba(20,184,166,0.12)" stroke="#14b8a6" stroke-width="2" stroke-dasharray="7,5" rx="8" ry="8" />';
+                    routesEl.innerHTML += '<text x="' + (drawX + 8).toFixed(1) + '" y="' + Math.max(16, drawY + 16).toFixed(1) + '" fill="#ccfbf1" font-size="12" font-weight="700">待下载区域</text>';
+                }
+
                 const autoRoutePoints = [];
                 (fallbackState.autoRoute || []).forEach(function(item) {
                     const lat = Number(item.lat);
@@ -740,6 +1024,11 @@
                     placeMarker(Number(fallbackState.overlay.vehicle.lat), Number(fallbackState.overlay.vehicle.lon), '✈', '#16a34a');
                 }
             }
+
+            window.renderFallbackCacheCoverage = function(summary) {
+                fallbackState.cacheCoverage = summary && typeof summary === 'object' ? summary : null;
+                renderFallback();
+            };
 
             function bindBridgeFallback() {
                 if (mapBridge || bridgeBindingInProgress) {
@@ -790,12 +1079,29 @@
                     if (event.button !== 0) {
                         return;
                     }
+                    if (offlineAreaSelectionEnabled) {
+                        offlineAreaSelecting = true;
+                        const latlng = containerEventToLatLng(event);
+                        offlineDrawStartLatLng = latlng;
+                        offlineDrawEndLatLng = latlng;
+                        offlineDrawSelectionBounds = null;
+                        updateDragStatus('框选区域', latlng, latlng);
+                        updateOfflineCursor();
+                        renderFallback();
+                        return;
+                    }
                     isDragging = true;
                     dragStartPoint = { x: Number(event.clientX || 0), y: Number(event.clientY || 0) };
                     dragStartCenter = { lat: fallbackState.center.lat, lng: fallbackState.center.lng };
+                    updateDragStatus('地图平移', dragStartCenter, dragStartCenter);
                     updateOfflineCursor();
                 });
                 mapEl.addEventListener('mousemove', function(event) {
+                    if (offlineAreaSelecting && offlineDrawStartLatLng) {
+                        offlineDrawEndLatLng = containerEventToLatLng(event);
+                        updateDragStatus('框选区域', offlineDrawStartLatLng, offlineDrawEndLatLng);
+                        renderFallback();
+                    }
                     if (isDragging && dragStartPoint && dragStartCenter) {
                         const dx = Number(event.clientX || 0) - dragStartPoint.x;
                         const dy = Number(event.clientY || 0) - dragStartPoint.y;
@@ -805,6 +1111,7 @@
                             lat: worldToLat(worldY, fallbackState.zoom),
                             lng: worldToLon(worldX, fallbackState.zoom),
                         };
+                        updateDragStatus('地图平移', dragStartCenter, fallbackState.center);
                         renderFallback();
                     }
                     const latlng = containerEventToLatLng(event);
@@ -812,6 +1119,10 @@
                     emitMapEvent('mousemove', { latlng: latlng });
                 });
                 mapEl.addEventListener('mouseleave', function() {
+                    if (offlineAreaSelecting) {
+                        offlineAreaSelecting = false;
+                        updateOfflineCursor();
+                    }
                     if (isDragging) {
                         isDragging = false;
                         dragStartPoint = null;
@@ -825,11 +1136,29 @@
                     setCoordDisplay(null);
                     emitMapEvent('mouseout', {});
                 });
-                window.addEventListener('mouseup', function() {
+                window.addEventListener('mouseup', function(event) {
+                    if (offlineAreaSelecting) {
+                        if (event) {
+                            offlineDrawEndLatLng = containerEventToLatLng(event);
+                        }
+                        offlineAreaSelecting = false;
+                        const bounds = resolveDrawSelectionBounds();
+                        if (bounds) {
+                            offlineDrawSelectionBounds = bounds;
+                            setOfflineAreaSelectionEnabled(false);
+                            setOfflineDownloadHint('已完成框选，点击“框选区域下载”再次开始或直接下载。', 'ok');
+                            setMapStatus('框选区域已就绪：可开始离线下载。', 'warning');
+                        } else {
+                            setOfflineDownloadHint('框选区域无效，请重新拖拽选择。', 'warn');
+                            setOfflineAreaSelectionEnabled(false);
+                        }
+                        renderFallback();
+                    }
                     if (!isDragging) {
                         return;
                     }
                     isDragging = false;
+                    updateDragStatus('地图平移', dragStartCenter, fallbackState.center);
                     dragStartPoint = null;
                     dragStartCenter = null;
                     updateOfflineCursor();
@@ -854,6 +1183,10 @@
                 }, { passive: false });
                 mapEl.addEventListener('click', function(event) {
                     const latlng = containerEventToLatLng(event);
+                    if (offlineAreaSelectionEnabled || offlineAreaSelecting) {
+                        emitMapEvent('click', { latlng: latlng });
+                        return;
+                    }
                     if (measureMode) {
                         setMeasureInfo('离线简化模式');
                     } else if (homePickMode) {
@@ -1279,6 +1612,9 @@
             waypointLayer = L.layerGroup().addTo(window.map);
             loiterLayer = L.layerGroup().addTo(window.map);
             autoRouteLayer = L.layerGroup().addTo(window.map);
+            if (cachedCoverageSummary) {
+                applyCachedCoverageOutline(cachedCoverageSummary);
+            }
             const mapContainer = window.map.getContainer();
             mapContainer.addEventListener('contextmenu', function(evt) { evt.preventDefault(); });
             window.map.on('contextmenu', function(evt) {
@@ -1599,6 +1935,55 @@
 
         window.map.on('mousemove', function(e) { updateCoordDisplay(e.latlng); });
         window.map.on('mouseout', function() { updateCoordDisplay(null); });
+        window.map.on('mousedown', function(event) {
+            if (!offlineAreaSelectionEnabled || !event || !event.latlng) {
+                return;
+            }
+            const mouseButton = event.originalEvent && typeof event.originalEvent.button === 'number' ? event.originalEvent.button : 0;
+            if (mouseButton !== 0) {
+                return;
+            }
+            offlineAreaSelecting = true;
+            offlineDrawStartLatLng = { lat: Number(event.latlng.lat), lng: Number(event.latlng.lng) };
+            offlineDrawEndLatLng = offlineDrawStartLatLng;
+            offlineDrawSelectionBounds = null;
+            if (window.map.dragging && typeof window.map.dragging.disable === 'function') {
+                window.map.dragging.disable();
+            }
+            updateDragStatus('框选区域', offlineDrawStartLatLng, offlineDrawEndLatLng);
+            renderOfflineAreaSelectionOverlay();
+        });
+        window.map.on('mousemove', function(event) {
+            if (!offlineAreaSelecting || !event || !event.latlng) {
+                return;
+            }
+            offlineDrawEndLatLng = { lat: Number(event.latlng.lat), lng: Number(event.latlng.lng) };
+            updateDragStatus('框选区域', offlineDrawStartLatLng, offlineDrawEndLatLng);
+            renderOfflineAreaSelectionOverlay();
+        });
+        window.map.on('mouseup', function(event) {
+            if (!offlineAreaSelecting) {
+                return;
+            }
+            offlineAreaSelecting = false;
+            if (window.map.dragging && typeof window.map.dragging.enable === 'function') {
+                window.map.dragging.enable();
+            }
+            if (event && event.latlng) {
+                offlineDrawEndLatLng = { lat: Number(event.latlng.lat), lng: Number(event.latlng.lng) };
+            }
+            const bounds = resolveDrawSelectionBounds();
+            if (bounds) {
+                offlineDrawSelectionBounds = bounds;
+                setOfflineAreaSelectionEnabled(false);
+                setOfflineDownloadHint('已完成框选，点击“框选区域下载”再次开始或直接下载。', 'ok');
+                setMapStatus('框选区域已就绪：可开始离线下载。', 'warning');
+                renderOfflineAreaSelectionOverlay();
+            } else {
+                setOfflineDownloadHint('框选区域无效，请重新拖拽选择。', 'warn');
+                setOfflineAreaSelectionEnabled(false);
+            }
+        });
         window.map.on('click', function(e) {
             if (!measureMode) {
                 return;
@@ -1631,6 +2016,9 @@
             if (measureMode) {
                 return;
             }
+            if (offlineAreaSelectionEnabled || offlineAreaSelecting) {
+                return;
+            }
             if (!event || !event.latlng) {
                 return;
             }
@@ -1649,7 +2037,7 @@
                 }
 
                 homePickMode = false;
-                window.map.getContainer().style.cursor = addWaypointMode ? 'crosshair' : '';
+                updateMapInteractionCursor();
 
                 const localTerrain = getMouseDemElevation(event.latlng);
                 if (Number.isFinite(localTerrain)) {
@@ -1839,14 +2227,12 @@
         window.setAddWaypointMode = function(enabled) {
             addWaypointMode = Boolean(enabled);
             console.log("setAddWaypointMode called: enabled=" + enabled + ", addWaypointMode=" + addWaypointMode);
-            const container = window.map.getContainer();
-            container.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : '');
+            updateMapInteractionCursor();
         };
 
         window.setHomePickMode = function(enabled) {
             homePickMode = Boolean(enabled);
-            const container = window.map.getContainer();
-            container.style.cursor = homePickMode ? 'cell' : (addWaypointMode ? 'crosshair' : '');
+            updateMapInteractionCursor();
         };
 
         window.setMapSource = function(mapName) {
@@ -2303,7 +2689,10 @@
                 if (!isLocked) {
                     let smartDragState = null;
                     let lastRealtimeEmitMs = 0;
+                    let dragOriginLatLng = null;
                     marker.on('dragstart', function() {
+                        dragOriginLatLng = marker.getLatLng();
+                        updateDragStatus('自动点 ' + String(item.name || ''), dragOriginLatLng, dragOriginLatLng);
                         if (item.name === 'L1') {
                             smartDragState = buildSmartDragState('L3', 'L1', 'L2');
                         } else if (item.name === 'L3') {
@@ -2367,6 +2756,7 @@
                             updateAutoRoutePointData('L2', linkedL2Pos[0], linkedL2Pos[1]);
                         }
                         syncAutoRouteLine();
+                        updateDragStatus('自动点 ' + String(itemName || ''), dragOriginLatLng || pos, { lat: constrainedPos[0], lng: constrainedPos[1] });
                         const now = Date.now();
                         if ((now - lastRealtimeEmitMs) > 33 && mapBridge && typeof mapBridge.moveAutoRoutePointRealtime === 'function') {
                             lastRealtimeEmitMs = now;
@@ -2378,7 +2768,9 @@
                     });
                     marker.on('dragend', function(event) {
                         const pos = event.target.getLatLng();
+                        updateDragStatus('自动点 ' + String(item.name || ''), dragOriginLatLng || pos, pos);
                         smartDragState = null;
+                        dragOriginLatLng = null;
                         if (mapBridge && typeof mapBridge.moveAutoRoutePoint === 'function') {
                             mapBridge.moveAutoRoutePoint(item.name, pos.lat, pos.lng);
                             if (item.name === 'L1' || item.name === 'L3') {
@@ -2416,7 +2808,9 @@
 
         function attachWaypointEvents(marker, index, getLoiterCircle) {
             let lastRealtimeEmitMs = 0;
+            let dragStartLatLng = null;
             marker.off('click');
+            marker.off('dragstart');
             marker.off('drag');
             marker.off('dragend');
             marker.off('contextmenu');
@@ -2438,6 +2832,12 @@
                 const pt = window.map.latLngToContainerPoint(event.latlng);
                 showWaypointContextMenu(pt.x, pt.y, index);
             });
+            marker.on('dragstart', function(event) {
+                dragStartLatLng = event.target.getLatLng();
+                const wp = renderedWaypoints[index] || {};
+                const displayIndex = waypointDisplayIndex(index, wp);
+                updateDragStatus('航点 ' + String(displayIndex), dragStartLatLng, dragStartLatLng);
+            });
             marker.on('drag', function(event) {
                 const position = event.target.getLatLng();
                 waypointCoords[index] = [position.lat, position.lng];
@@ -2448,6 +2848,9 @@
                 if (loiterCircle) {
                     loiterCircle.setLatLng(position);
                 }
+                const wp = renderedWaypoints[index] || {};
+                const displayIndex = waypointDisplayIndex(index, wp);
+                updateDragStatus('航点 ' + String(displayIndex), dragStartLatLng || position, position);
                 const now = Date.now();
                 const hasRealtimeAny = mapBridge && typeof mapBridge.moveWaypointRealtimeAny === 'function';
                 const hasRealtime = mapBridge && typeof mapBridge.moveWaypointRealtime === 'function';
@@ -2466,6 +2869,10 @@
                 if (routeLine) {
                     routeLine.setLatLngs(waypointCoords);
                 }
+                const wp = renderedWaypoints[index] || {};
+                const displayIndex = waypointDisplayIndex(index, wp);
+                updateDragStatus('航点 ' + String(displayIndex), dragStartLatLng || position, position);
+                dragStartLatLng = null;
                 const hasMoveAny = mapBridge && typeof mapBridge.moveWaypointAny === 'function';
                 const hasMove = mapBridge && typeof mapBridge.moveWaypoint === 'function';
                 if (hasMoveAny || hasMove) {
